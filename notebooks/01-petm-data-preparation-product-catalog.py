@@ -178,10 +178,6 @@ display(product_catalog_embedded)
 
 # COMMAND ----------
 
-print(product_catalog_embedded.schema)
-
-# COMMAND ----------
-
 # MAGIC %sql
 # MAGIC --Note that we need to enable Change Data Feed on the table to create the index
 # MAGIC CREATE TABLE IF NOT EXISTS product_data_embedded (
@@ -204,7 +200,7 @@ product_catalog_embedded.write.mode('overwrite').saveAsTable("product_data_embed
 
 # COMMAND ----------
 
-# MAGIC %md ### Create Self-Managed Vector Search Index
+# MAGIC %md ### Create Self-Managed Vector Search Index (MOVE THIS TO SEPERATE NOTEBOOK TO INCLUDE 3 EMBEDDING TABLES)
 
 # COMMAND ----------
 
@@ -212,7 +208,6 @@ product_catalog_embedded.write.mode('overwrite').saveAsTable("product_data_embed
 
 # COMMAND ----------
 
-# VECTOR_SEARCH_ENDPOINT_NAME = "petm-product-catalog-vs-index"
 VECTOR_SEARCH_ENDPOINT_NAME = "petm_genai_chatbot"
 catalog = "main"
 db = "databricks_petm_chatbot"
@@ -277,6 +272,10 @@ def wait_for_index_to_be_ready(vsc, vs_endpoint_name, index_name):
 
 # COMMAND ----------
 
+VECTOR_SEARCH_ENDPOINT_NAME = "text2sql"
+
+# COMMAND ----------
+
 from databricks.vector_search.client import VectorSearchClient
 vsc = VectorSearchClient()
 
@@ -330,8 +329,7 @@ print(f"index {vs_index_fullname} on table {source_table_fullname} is ready")
 import mlflow.deployments
 deploy_client = mlflow.deployments.get_deploy_client("databricks")
 
-question = "How can I track billing usage on my workspaces?"
-question = "What is a good product for recommendation for Small Breed dog that has Sensitive Skin and Stomach?"
+question = "What is a good product for recommendation for Small Breed dog that has Sensitive Skin and Stomach for Purina Pro Plan?"
 response = deploy_client.predict(endpoint="databricks-bge-large-en", inputs={"input": [question]})
 embeddings = [e['embedding'] for e in response.data]
 

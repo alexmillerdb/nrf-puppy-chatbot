@@ -1,4 +1,12 @@
 # Databricks notebook source
+# MAGIC %sql
+# MAGIC CREATE CATALOG IF NOT EXISTS alex_m;
+# MAGIC USE CATALOG alex_m;
+# MAGIC CREATE SCHEMA IF NOT EXISTS gen_ai;
+# MAGIC USE SCHEMA gen_ai;
+
+# COMMAND ----------
+
 # MAGIC %pip install transformers==4.30.2 langchain==0.0.319 llama-index==0.9.3 databricks-vectorsearch==0.20 pydantic==1.10.9 mlflow==2.9.0
 # MAGIC dbutils.library.restartPython()
 
