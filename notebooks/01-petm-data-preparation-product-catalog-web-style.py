@@ -19,14 +19,6 @@ spark.sql(f"USE SCHEMA {schema}")
 
 # COMMAND ----------
 
-# catalog = "main"
-# schema = "databricks_petm_chatbot"
-
-# spark.sql(f'USE CATALOG {catalog}')
-# spark.sql(f"USE SCHEMA {schema}")
-
-# COMMAND ----------
-
 # MAGIC %md ### Clean product catalog data:
 # MAGIC - Remove HTML tags
 # MAGIC - Concatenate item_name, flavor_desc, category_desc, health_consideration, and long_desc_cleaned
@@ -59,20 +51,26 @@ def clean_text(text: pd.Series) -> pd.Series:
 
 # COMMAND ----------
 
+from pyspark.sql import Window
+
 # product catalog data
 product_data = spark.table("petm_product_catalog")
 
 # use udf and concat_ws to concatenate the columns in `product_data`
-product_data_cleaned = product_data \
+product_data_ws = product_data \
     .withColumn("long_desc_cleansed", clean_text("long_desc")) \
     .withColumn("flavor_desc", F.when(F.col("flavor_desc").isNull(), F.lit("No flavor")).otherwise(F.col("flavor_desc"))) \
     .withColumn("flavor_desc_cleansed", clean_text(F.concat_ws(": ", F.lit("Flavor"), F.col("flavor_desc")))) \
     .withColumn("item_title_cleansed", clean_text(F.concat_ws(": ", F.lit("Item Title"), F.col("item_title")))) \
     .withColumn("category_desc_cleansed", F.concat_ws(": ", F.lit("Category Desc"), F.col("category_desc"))) \
     .withColumn("product_catalog_text", F.concat_ws("\n", *["item_title_cleansed", "flavor_desc_cleansed", "category_desc_cleansed", "long_desc_cleansed"])) \
-    .withColumn("length_product_catalog_text", F.length("product_catalog_text"))
+    .withColumn("length_product_catalog_text", F.length("product_catalog_text")) \
+    .withColumn("web_style_rank", F.rank().over(Window.partitionBy("web_style_id").orderBy("item_id"))) \
+    .filter(F.col("web_Style_rank") == 1) \
+    .cache()
 
-display(product_data_cleaned)
+print(product_data_ws.count())
+display(product_data_ws)
 
 # COMMAND ----------
 
@@ -80,18 +78,19 @@ display(product_data_cleaned)
 
 # COMMAND ----------
 
-from pyspark.sql import Window
+# from pyspark.sql import Window
 
-cols = ['item_id', 'web_style_id', 'item_title', 'web_item_page_url', 'brand_name', 'size_desc', 'color_desc', 'flavor_desc', 'flavor_display_desc', 'category_desc', 'special_category_desc', 'channel_category_desc', 'health_category_desc', 'nutri_category_desc', 'pharmacy_item_ind', 'pharmacy_item_type', 'health_consideration', 'long_desc', 'short_desc', 'webimageurl', 'long_desc_cleansed', 'flavor_desc_cleansed', 'item_title_cleansed', 'category_desc_cleansed', 'product_catalog_text', 'length_product_catalog_text']
+# cols = ['item_id', 'web_style_id', 'item_title', 'web_item_page_url', 'brand_name', 'size_desc', 'color_desc', 'flavor_desc', 'flavor_display_desc', 'category_desc', 'special_category_desc', 'channel_category_desc', 'health_category_desc', 'nutri_category_desc', 'pharmacy_item_ind', 'pharmacy_item_type', 'health_consideration', 'long_desc', 'short_desc', 'webimageurl', 'long_desc_cleansed', 'flavor_desc_cleansed', 'item_title_cleansed', 'category_desc_cleansed', 'product_catalog_text', 'length_product_catalog_text']
 
-product_data_ws = spark.table("petm_product_catalog_chunked") \
-  .select(*cols).distinct() \
-  .withColumn("web_style_rank", F.rank().over(Window.partitionBy("web_style_id").orderBy("item_id"))) \
-  .filter(F.col("web_Style_rank") == 1) \
-  .cache()
+# # product_data_ws = spark.table("petm_product_catalog_chunked") \
+# product_data_ws = product_data_cleaned \
+#   .select(*cols).distinct() \
+#   .withColumn("web_style_rank", F.rank().over(Window.partitionBy("web_style_id").orderBy("item_id"))) \
+#   .filter(F.col("web_Style_rank") == 1) \
+#   .cache()
 
-print(product_data_ws.count())
-display(product_data_ws)
+# print(product_data_ws.count())
+# display(product_data_ws)
 
 # COMMAND ----------
 
@@ -300,10 +299,6 @@ def wait_for_index_to_be_ready(vsc, vs_endpoint_name, index_name):
 
 # COMMAND ----------
 
-VECTOR_SEARCH_ENDPOINT_NAME = "text2sql"
-
-# COMMAND ----------
-
 from databricks.vector_search.client import VectorSearchClient
 vsc = VectorSearchClient()
 
@@ -360,23 +355,6 @@ deploy_client = mlflow.deployments.get_deploy_client("databricks")
 question = "What is a good product for recommendation for Small Breed dog that has Sensitive Skin and Stomach for Purina Pro Plan?"
 question = "I need a product recommendation for a large breed puppy for brands such as Pro Plan or Royal Canin."
 question = "I have a German Shepherd adult who likes Chicken. I want to feed him a grain-free formulation, dry food."
-response = deploy_client.predict(endpoint="databricks-bge-large-en", inputs={"input": [question]})
-embeddings = [e['embedding'] for e in response.data]
-
-results = vsc.get_index(VECTOR_SEARCH_ENDPOINT_NAME, vs_index_fullname).similarity_search(
-  query_vector=embeddings[0],
-  columns=["item_title", "web_item_page_url"],
-  num_results=5)
-docs = results.get('result', {}).get('data_array', [])
-docs
-
-# COMMAND ----------
-
-import mlflow.deployments
-deploy_client = mlflow.deployments.get_deploy_client("databricks")
-
-question = "What is a good product for recommendation for Small Breed dog that has Sensitive Skin and Stomach for Purina Pro Plan?"
-question = "I need a product recommendation for a large breed puppy for brands such as Pro Plan or Royal Canin."
 response = deploy_client.predict(endpoint="databricks-bge-large-en", inputs={"input": [question]})
 embeddings = [e['embedding'] for e in response.data]
 

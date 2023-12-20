@@ -4,6 +4,31 @@
 
 # COMMAND ----------
 
+# MAGIC %md Helper function
+
+# COMMAND ----------
+
+def display_chat(chat_history, response):
+  def user_message_html(message):
+    return f"""
+      <div style="width: 90%; border-radius: 10px; background-color: #c2efff; padding: 10px; box-shadow: 2px 2px 2px #F7f7f7; margin-bottom: 10px; font-size: 14px;">
+        {message}
+      </div>"""
+  def assistant_message_html(message):
+    return f"""
+      <div style="width: 90%; border-radius: 10px; background-color: #e3f6fc; padding: 10px; box-shadow: 2px 2px 2px #F7f7f7; margin-bottom: 10px; margin-left: 40px; font-size: 14px">
+        <img style="float: left; width:40px; margin: -10px 5px 0px -10px" src="https://github.com/databricks-demos/dbdemos-resources/blob/main/images/product/chatbot-rag/robot.png?raw=true"/>
+        {message}
+      </div>"""
+  chat_history_html = "".join([user_message_html(m["content"]) if m["role"] == "user" else assistant_message_html(m["content"]) for m in chat_history])
+  answer = response["result"].replace('\n', '<br/>')
+  sources_html = ("<br/><br/><br/><strong>Sources:</strong><br/> <ul>" + '\n'.join([f"""<li><a href="{s}">{s}</a></li>""" for s in response["sources"]]) + "</ul>") if response["sources"] else ""
+  response_html = f"""{answer}{sources_html}"""
+
+  displayHTML(chat_history_html + assistant_message_html(response_html))
+
+# COMMAND ----------
+
 # MAGIC %md ### Simple example of Langchain using ChatDatabricks
 
 # COMMAND ----------
@@ -47,7 +72,7 @@ print(chain.invoke({"question": "What is PetSmart?"}))
 # COMMAND ----------
 
 prompt_with_history_str = """
-Your are a Pet Specialty retailer chatbot for dogs. Please answer Pet questions about dogs only. If you don't know or not related to pets and dogs, don't answer.
+Your are a Pet Specialty retailer chatbot for dogs. Please answer Pet questions about dogs, dog services, and dog products only. If you don't know or not related to pets and dogs, don't answer.
 
 Here is a history between you and a human: {chat_history}
 
@@ -132,53 +157,57 @@ print(chain_with_history.invoke({
 
 # COMMAND ----------
 
-chat_model = ChatDatabricks(endpoint="databricks-llama-2-70b-chat", max_tokens = 200)
+# MAGIC %md Add prompt templates to config file
 
-is_question_about_databricks_str = """
-You are classifying documents to know if this question is related with Databricks in AWS, Azure and GCP, Workspaces, Databricks account and cloud infrastructure setup, Data Science, Data Engineering, Big Data, Datawarehousing, SQL, Python and Scala or something from a very different field. Also answer no if the last part is inappropriate. 
+# COMMAND ----------
 
-Here are some examples:
+# chat_model = ChatDatabricks(endpoint="databricks-llama-2-70b-chat", max_tokens = 200)
 
-Question: Knowing this followup history: What is Databricks?, classify this question: Do you have more details?
-Expected Response: Yes
+# is_question_about_petsmart_str = """
+# You are classifying documents to know if this question is related with Databricks in AWS, Azure and GCP, Workspaces, Databricks account and cloud infrastructure setup, Data Science, Data Engineering, Big Data, Datawarehousing, SQL, Python and Scala or something from a very different field. Also answer no if the last part is inappropriate. 
 
-Question: Knowing this followup history: What is Databricks?, classify this question: Write me a song.
-Expected Response: No
+# Here are some examples:
 
-Only answer with "yes" or "no". 
+# Question: Knowing this followup history: What is Databricks?, classify this question: Do you have more details?
+# Expected Response: Yes
 
-Knowing this followup history: {chat_history}, classify this question: {question}
-"""
+# Question: Knowing this followup history: What is Databricks?, classify this question: Write me a song.
+# Expected Response: No
 
-is_question_about_databricks_prompt = PromptTemplate(
-  input_variables= ["chat_history", "question"],
-  template = is_question_about_databricks_str
-)
+# Only answer with "yes" or "no". 
 
-is_about_databricks_chain = (
-    {
-        "question": itemgetter("messages") | RunnableLambda(extract_question),
-        "chat_history": itemgetter("messages") | RunnableLambda(extract_history),
-    }
-    | is_question_about_databricks_prompt
-    | chat_model
-    | StrOutputParser()
-)
+# Knowing this followup history: {chat_history}, classify this question: {question}
+# """
 
-#Returns "Yes" as this is about Databricks: 
-print(is_about_databricks_chain.invoke({
-    "messages": [
-        {"role": "user", "content": "What is Apache Spark?"}, 
-        {"role": "assistant", "content": "Apache Spark is an open-source data processing engine that is widely used in big data analytics."}, 
-        {"role": "user", "content": "Does it support streaming?"}
-    ]
-}))
+# is_question_about_petsmart_prompt = PromptTemplate(
+#   input_variables= ["chat_history", "question"],
+#   template = is_question_about_petsmart_str
+# )
+
+# is_about_petsmart_chain = (
+#     {
+#         "question": itemgetter("messages") | RunnableLambda(extract_question),
+#         "chat_history": itemgetter("messages") | RunnableLambda(extract_history),
+#     }
+#     | is_question_about_databricks_prompt
+#     | chat_model
+#     | StrOutputParser()
+# )
+
+# #Returns "Yes" as this is about Databricks: 
+# print(is_about_databricks_chain.invoke({
+#     "messages": [
+#         {"role": "user", "content": "What is Apache Spark?"}, 
+#         {"role": "assistant", "content": "Apache Spark is an open-source data processing engine that is widely used in big data analytics."}, 
+#         {"role": "user", "content": "Does it support streaming?"}
+#     ]
+# }))
 
 # COMMAND ----------
 
 chat_model = ChatDatabricks(endpoint="databricks-llama-2-70b-chat", max_tokens = 200)
 
-is_question_about_databricks_str = """
+is_question_about_petsmart_str = """
 You are classifying documents to know if this question is related with dogs, puppies, pet food, pet supplies, and other dog related items at Pet Specialty retailer. Also answer no if the last part is inappropriate. 
 
 Here are some examples:
@@ -194,23 +223,23 @@ Only answer with "yes" or "no".
 Knowing this followup history: {chat_history}, classify this question: {question}
 """
 
-is_question_about_databricks_prompt = PromptTemplate(
+is_question_about_petsmart_prompt = PromptTemplate(
   input_variables= ["chat_history", "question"],
-  template = is_question_about_databricks_str
+  template = is_question_about_petsmart_str
 )
 
-is_about_databricks_chain = (
+is_about_petsmart_chain = (
     {
         "question": itemgetter("messages") | RunnableLambda(extract_question),
         "chat_history": itemgetter("messages") | RunnableLambda(extract_history),
     }
-    | is_question_about_databricks_prompt
+    | is_question_about_petsmart_prompt
     | chat_model
     | StrOutputParser()
 )
 
-#Returns "Yes" as this is about Databricks: 
-print(is_about_databricks_chain.invoke({
+#Returns "Yes" as this is about PetSmart: 
+print(is_about_petsmart_chain.invoke({
     "messages": [
         {"role": "user", "content": "What is PetSmart?"}, 
         {"role": "assistant", "content": "PetSmart is a retail chain that specializes in pet supplies and services, such as food, toys, grooming, and training for dogs, cats, birds, fish, and other small animals."}, 
@@ -221,7 +250,7 @@ print(is_about_databricks_chain.invoke({
 # COMMAND ----------
 
 #Return "no" as this isn't about Databricks
-print(is_about_databricks_chain.invoke({
+print(is_about_petsmart_chain.invoke({
     "messages": [
         {"role": "user", "content": "What is the meaning of life?"}
     ]
@@ -230,6 +259,11 @@ print(is_about_databricks_chain.invoke({
 # COMMAND ----------
 
 # MAGIC %md ### Use Vector Search Index to retrieve documents/products
+
+# COMMAND ----------
+
+# MAGIC %md Audit permissions using SP
+# MAGIC - Instructions for setting up SP: https://docs.databricks.com/en/administration-guide/users-groups/service-principals.html
 
 # COMMAND ----------
 
@@ -386,10 +420,10 @@ catalog = "main"
 db = "databricks_petm_chatbot"
 index_name=f"{catalog}.{db}.web_style_data_embedded_index"
 host = "https://" + spark.conf.get("spark.databricks.workspaceUrl")
-VECTOR_SEARCH_ENDPOINT_NAME = "text2sql"
+VECTOR_SEARCH_ENDPOINT_NAME = "petm_genai_chatbot"
 
-# #Let's make sure the secret is properly setup and can access our vector search index. Check the quick-start demo for more guidance
-# test_demo_permissions(host, secret_scope="dbdemos", secret_key="rag_sp_token", vs_endpoint_name=VECTOR_SEARCH_ENDPOINT_NAME, index_name=index_name, embedding_endpoint_name="databricks-bge-large-en")
+# # #Let's make sure the secret is properly setup and can access our vector search index. Check the quick-start demo for more guidance
+# test_demo_permissions(host, secret_scope="nrf-petm-chatbot", secret_key="rag_sp_token", vs_endpoint_name=VECTOR_SEARCH_ENDPOINT_NAME, index_name=index_name, embedding_endpoint_name="databricks-bge-large-en")
 
 # COMMAND ----------
 
@@ -544,7 +578,7 @@ relevant_question_chain = (
 )
 
 irrelevant_question_chain = (
-  RunnableLambda(lambda x: {"result": 'I cannot answer questions that are not about Databricks.', "sources": []})
+  RunnableLambda(lambda x: {"result": 'I cannot answer questions that are not about PetSmart, dogs, or puppies.', "sources": []})
 )
 
 branch_node = RunnableBranch(
@@ -555,7 +589,7 @@ branch_node = RunnableBranch(
 
 full_chain = (
   {
-    "question_is_relevant": is_about_databricks_chain,
+    "question_is_relevant": is_about_petsmart_chain,
     "question": itemgetter("messages") | RunnableLambda(extract_question),
     "chat_history": itemgetter("messages") | RunnableLambda(extract_history),    
   }
@@ -584,6 +618,21 @@ dialog = {
         {"role": "user", "content": "What is PetSmart?"}, 
         {"role": "assistant", "content": "PetSmart is a Pet Specialty retailer."},  
         {"role": "user", "content": "Does PetSmart sell dog food for small breed dogs like chihuahuas?"}
+    ]
+}
+print(f'Testing with relevant history and question...')
+response = full_chain.invoke(dialog)
+response 
+
+# COMMAND ----------
+
+dialog = {
+    "messages": [
+        {"role": "user", "content": "What is PetSmart?"}, 
+        {"role": "assistant", "content": "PetSmart is a Pet Specialty retailer."},  
+        {"role": "user", "content": "Does PetSmart sell dog food for small breed dogs like chihuahuas?"},
+        {"role": "assistant", "content": '  Yes, PetSmart does sell dog food for small breed dogs like Chihuahuas. Royal Canin Breed Health Nutrition Chihuahua Puppy Dry Dog Food is one example of dog food available at PetSmart that is specifically formulated for small breed dogs like Chihuahuas. Additionally, Canidae Pure Petite Small Breed All Life Stage Wet Dog Food is another option available at PetSmart that is designed for small breed dogs, including Chihuahuas.'},
+        {"role": "user", "content": "I prefer Royal Canin brand, please recommend more of those items."}
     ]
 }
 print(f'Testing with relevant history and question...')
@@ -641,3 +690,7 @@ with mlflow.start_run(run_name="petm_chatbot_rag") as run:
 
 model = mlflow.langchain.load_model(model_info.model_uri)
 model.invoke(dialog)
+
+# COMMAND ----------
+
+display_chat(dialog["messages"], response)
