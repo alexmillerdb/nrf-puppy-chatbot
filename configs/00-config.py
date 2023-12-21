@@ -9,3 +9,4 @@ ds_schema = "datascience"
 
 # Vector Search Endpoint
 VECTOR_SEARCH_ENDPOINT_NAME = "petm_genai_chatbot"
+source_table = "petm_data_embedded"
