@@ -8,18 +8,17 @@ from pyspark.sql import functions as F
 from pyspark.sql.types import StringType
 from langchain.text_splitter import TokenTextSplitter
 import pandas as pd
+from functions.data_prep import clean_text, get_embedding, create_cdc_table
 
 # COMMAND ----------
 
-catalog = "petsmart_chatbot"
-schema = "datascience"
-
-spark.sql(f'USE CATALOG {catalog}')
-spark.sql(f"USE SCHEMA {schema}")
+# MAGIC %run ../configs/00-config
 
 # COMMAND ----------
 
-# MAGIC %md ### Move helper functions to notebook/py file and config file to json/yaml
+# Delta Share catalog and schema
+spark.sql(f'USE CATALOG {ds_catalog}')
+spark.sql(f"USE SCHEMA {ds_schema}")
 
 # COMMAND ----------
 
@@ -121,9 +120,6 @@ print(all_splits[1])
 
 # COMMAND ----------
 
-catalog = "main"
-schema = "databricks_petm_chatbot"
-
 spark.sql(f'USE CATALOG {catalog}')
 spark.sql(f'CREATE SCHEMA IF NOT EXISTS {schema}')
 spark.sql(f"USE SCHEMA {schema}")
@@ -142,28 +138,6 @@ faqs_df_chunked_inputs.write.format("delta").mode("overwrite").saveAsTable("faqs
 
 # COMMAND ----------
 
-@F.pandas_udf("array<float>")
-def get_embedding(contents: pd.Series) -> pd.Series:
-    import mlflow.deployments
-    deploy_client = mlflow.deployments.get_deploy_client("databricks")
-    def get_embeddings(batch):
-        #Note: this will fail if an exception is thrown during embedding creation (add try/except if needed) 
-        response = deploy_client.predict(endpoint="databricks-bge-large-en", inputs={"input": batch})
-        return [e['embedding'] for e in response.data]
-
-    # Splitting the contents into batches of 150 items each, since the embedding model takes at most 150 inputs per request.
-    max_batch_size = 150
-    batches = [contents.iloc[i:i + max_batch_size] for i in range(0, len(contents), max_batch_size)]
-
-    # Process each batch and collect the results
-    all_embeddings = []
-    for batch in batches:
-        all_embeddings += get_embeddings(batch.tolist())
-
-    return pd.Series(all_embeddings)
-
-# COMMAND ----------
-
 faqs_embedded = spark.table("faqs_chunked") \
     .withColumn("embeddings", get_embedding("text")) \
     .withColumn("id", F.monotonically_increasing_id()) \
@@ -171,18 +145,6 @@ faqs_embedded = spark.table("faqs_chunked") \
 
 print(faqs_embedded.count())
 display(faqs_embedded)
-
-# COMMAND ----------
-
-def create_cdc_table(table_name, df):
-    from delta import DeltaTable
-    
-    (DeltaTable.createIfNotExists(spark)
-            .tableName(table_name)
-            .addColumns(df.schema)
-            .property("delta.enableChangeDataFeed", "true")
-            .property("delta.columnMapping.mode", "name")
-            .execute())
 
 # COMMAND ----------
 
