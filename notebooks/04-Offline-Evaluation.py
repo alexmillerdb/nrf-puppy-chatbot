@@ -84,6 +84,7 @@ db = "databricks_petm_chatbot"
 os.environ['DATABRICKS_TOKEN'] = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
 model_name = f"{catalog}.{db}.petm_chatbot_model"
 model_version_to_evaluate = get_latest_model_version(model_name)
+print(f"Model version to evaluate: {model_version_to_evaluate}")
 mlflow.set_registry_uri("databricks-uc")
 rag_model = mlflow.langchain.load_model(f"models:/{model_name}/{model_version_to_evaluate}")
 
@@ -101,20 +102,144 @@ def predict_answer(questions):
 
 # COMMAND ----------
 
-eval_dataset = spark.table(f"{catalog}.{db}.web_style_data_embedded")
+df_qa = spark.table(f"{catalog}.{db}.faqs_chunked") \
+    .filter(F.col("num_chunks") == 1) \
+    .withColumn("questions_plus_context", F.concat(F.lit("PetSmart: "), F.col("context"), F.lit(" "), F.col("question"))) \
+    .selectExpr('questions_plus_context as inputs', 'answer as targets') \
+    .limit(20)
 
-display(eval_dataset)
+df_qa_with_preds = df_qa.withColumn('preds', predict_answer(F.col('inputs'))).cache()
+
+print(df_qa_with_preds.count())
+display(df_qa_with_preds)
 
 # COMMAND ----------
 
-df_qa = (spark.read.table('evaluation_dataset')
-                  .selectExpr('question as inputs', 'answer as targets')
-                  .where("targets is not null")
-                  .sample(fraction=0.005, seed=40)) #small sample for interactive demo
+# df_qa = (spark.read.table('evaluation_dataset')
+#                   .selectExpr('question as inputs', 'answer as targets')
+#                   .where("targets is not null")
+#                   .sample(fraction=0.005, seed=40)) #small sample for interactive demo
 
-df_qa_with_preds = df_qa.withColumn('preds', predict_answer(col('inputs'))).cache()
+# df_qa_with_preds = df_qa.withColumn('preds', predict_answer(col('inputs'))).cache()
 
-display(df_qa_with_preds)
+# display(df_qa_with_preds)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC
+# MAGIC ##LLMs-as-a-judge: automated LLM evaluation with out of the box and custom GenAI metrics
+# MAGIC
+# MAGIC MLflow 2.8 provides out of the box GenAI metrics and enables us to make our own GenAI metrics:
+# MAGIC - Mlflow will automatically compute relevant task-related metrics. In our case, `model_type='question-answering'` will add the `toxicity` and `token_count` metrics.
+# MAGIC - Then, we can import out of the box metrics provided by MLflow 2.8. Let's benefit from our ground-truth labels by computing the `answer_correctness` metric. 
+# MAGIC - Finally, we can define customer metrics. Here, creativity is the only limit. In our demo, we will evaluate the `professionalism` of our Q&A chatbot.
+
+# COMMAND ----------
+
+from mlflow.metrics.genai.metric_definitions import answer_correctness
+from mlflow.metrics.genai import make_genai_metric, EvaluationExample
+
+# Because we have our labels (answers) within the evaluation dataset, we can evaluate the answer correctness as part of our metric. Again, this is optional.
+answer_correctness_metrics = answer_correctness(model=f"endpoints:/{endpoint_name}")
+print(answer_correctness_metrics)
+
+# COMMAND ----------
+
+# MAGIC %md Adding custom professionalism metric
+
+# COMMAND ----------
+
+professionalism_example = EvaluationExample(
+    input="What is MLflow?",
+    output=(
+        "MLflow is like your friendly neighborhood toolkit for managing your machine learning projects. It helps "
+        "you track experiments, package your code and models, and collaborate with your team, making the whole ML "
+        "workflow smoother. It's like your Swiss Army knife for machine learning!"
+    ),
+    score=2,
+    justification=(
+        "The response is written in a casual tone. It uses contractions, filler words such as 'like', and "
+        "exclamation points, which make it sound less professional. "
+    )
+)
+
+professionalism = make_genai_metric(
+    name="professionalism",
+    definition=(
+        "Professionalism refers to the use of a formal, respectful, and appropriate style of communication that is "
+        "tailored to the context and audience. It often involves avoiding overly casual language, slang, or "
+        "colloquialisms, and instead using clear, concise, and respectful language."
+    ),
+    grading_prompt=(
+        "Professionalism: If the answer is written using a professional tone, below are the details for different scores: "
+        "- Score 1: Language is extremely casual, informal, and may include slang or colloquialisms. Not suitable for "
+        "professional contexts."
+        "- Score 2: Language is casual but generally respectful and avoids strong informality or slang. Acceptable in "
+        "some informal professional settings."
+        "- Score 3: Language is overall formal but still have casual words/phrases. Borderline for professional contexts."
+        "- Score 4: Language is balanced and avoids extreme informality or formality. Suitable for most professional contexts. "
+        "- Score 5: Language is noticeably formal, respectful, and avoids casual elements. Appropriate for formal "
+        "business or academic settings. "
+    ),
+    model=f"endpoints:/{endpoint_name}",
+    parameters={"temperature": 0.0},
+    aggregations=["mean", "variance"],
+    examples=[professionalism_example],
+    greater_is_better=True
+)
+
+print(professionalism)
+
+# COMMAND ----------
+
+# MAGIC %md Start evaluation run
+
+# COMMAND ----------
+
+from mlflow.deployments import set_deployments_target
+
+set_deployments_target("databricks")
+
+#This will automatically log all
+with mlflow.start_run(run_name="petm_chatbot_rag") as run:
+    eval_results = mlflow.evaluate(data = df_qa_with_preds.toPandas(), # evaluation data,
+                                   model_type="question-answering", # toxicity and token_count will be evaluated   
+                                   predictions="preds", # prediction column_name from eval_df
+                                   targets = "targets",
+                                   extra_metrics=[answer_correctness_metrics, professionalism])
+    
+eval_results.metrics
+
+# COMMAND ----------
+
+# MAGIC %md 
+# MAGIC ## Visualizations of GenAI metrics produced by Llama2-70B
+
+# COMMAND ----------
+
+df_genai_metrics = eval_results.tables["eval_results_table"]
+display(df_genai_metrics)
+
+# COMMAND ----------
+
+import plotly.express as px
+px.histogram(df_genai_metrics, x="token_count", labels={"token_count": "Token Count"}, title="Distribution of Token Counts in Model Responses")
+
+# COMMAND ----------
+
+# Counting the occurrences of each answer correctness score
+px.bar(df_genai_metrics['answer_correctness/v1/score'].value_counts(), title='Answer Correctness Score Distribution')
+
+# COMMAND ----------
+
+df_genai_metrics['toxicity'] = df_genai_metrics['toxicity/v1/score'] * 100
+fig = px.scatter(df_genai_metrics, x='toxicity', y='answer_correctness/v1/score', title='Toxicity vs Correctness', size=[10]*len(df_genai_metrics))
+fig.update_xaxes(tickformat=".2f")
+
+# COMMAND ----------
+
+df_genai_metrics[df_genai_metrics['answer_correctness/v1/score'] == 3]
 
 # COMMAND ----------
 

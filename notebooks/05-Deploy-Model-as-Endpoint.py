@@ -12,7 +12,7 @@
 VECTOR_SEARCH_ENDPOINT_NAME = "petm_genai_chatbot"
 catalog = "main"
 db = "databricks_petm_chatbot"
-source_table = "web_style_data_embedded"
+source_table = "petm_data_embedded"
 
 # COMMAND ----------
 
@@ -202,6 +202,48 @@ w.serving_endpoints.query(serving_endpoint_name, dataframe_split=df_split)
 
 # COMMAND ----------
 
+df_split = DataframeSplitInput(columns=["messages"],
+                               data=[[ {"messages": [{"role": "user", "content": "Does PetSmart have a loyalty program?"}, 
+                                                     {"role": "assistant", "content": "Yes, PetSmart has a loyalty program called Treats."}, 
+                                                     {"role": "user", "content": "What are the main benefits of the Treats program?"}
+                                                    ]}]])
+w = WorkspaceClient()
+response = w.serving_endpoints.query(serving_endpoint_name, dataframe_split=df_split)
+
+# COMMAND ----------
+
+dialog = [{"role": "user", "content": "Does PetSmart have a loyalty program?"}, 
+                                                     {"role": "assistant", "content": "Yes, PetSmart has a loyalty program called Treats."}, 
+                                                     {"role": "user", "content": "What are the main benefits of the Treats program?"}
+                                                    ]
+
+# COMMAND ----------
+
+def display_chat(chat_history, response):
+  def user_message_html(message):
+    return f"""
+      <div style="width: 90%; border-radius: 10px; background-color: #c2efff; padding: 10px; box-shadow: 2px 2px 2px #F7f7f7; margin-bottom: 10px; font-size: 14px;">
+        {message}
+      </div>"""
+  def assistant_message_html(message):
+    return f"""
+      <div style="width: 90%; border-radius: 10px; background-color: #e3f6fc; padding: 10px; box-shadow: 2px 2px 2px #F7f7f7; margin-bottom: 10px; margin-left: 40px; font-size: 14px">
+        <img style="float: left; width:40px; margin: -10px 5px 0px -10px" src="https://github.com/databricks-demos/dbdemos-resources/blob/main/images/product/chatbot-rag/robot.png?raw=true"/>
+        {message}
+      </div>"""
+  chat_history_html = "".join([user_message_html(m["content"]) if m["role"] == "user" else assistant_message_html(m["content"]) for m in chat_history])
+  answer = response["result"].replace('\n', '<br/>')
+  sources_html = ("<br/><br/><br/><strong>Sources:</strong><br/> <ul>" + '\n'.join([f"""<li><a href="{s}">{s}</a></li>""" for s in response["sources"]]) + "</ul>") if response["sources"] else ""
+  response_html = f"""{answer}{sources_html}"""
+
+  displayHTML(chat_history_html + assistant_message_html(response_html))
+
+# COMMAND ----------
+
+display_chat(dialog, response.predictions[0])
+
+# COMMAND ----------
+
 # MAGIC %md ### Perform load testing
 
 # COMMAND ----------
@@ -211,15 +253,6 @@ w.serving_endpoints.query(serving_endpoint_name, dataframe_split=df_split)
 # COMMAND ----------
 
 from databricks_genai_inference import ChatCompletion
-
-response = ChatCompletion.create(model="llama-2-70b-chat",
-                                 messages=[{"role": "system", "content": "You are an AI assistant that specializes in PetSmart and Dogs. Your task is to generate 20 questions related to dogs food preferences, food recommendations, toys, treats. The questions should also include specific characteristics about the dog such as lifestage (puppy, adult, senior), dietary restrictions, breeds (German Shepherds), activity levels, and more."},
-                                 {"role": "user", "content": "Generate questions based on life stages (puppy, adult, senior), dietary restrictions, popular dog breeds, active dogs, and potty training."}],
-                                 max_tokens=1500)
-print(f"response.message:{response.message}")
-
-# COMMAND ----------
-
 import re
 
 question_list = []
@@ -240,9 +273,25 @@ question_list
 
 # COMMAND ----------
 
+for i in range(2):
+    # generate questions from Llama2
+    response = ChatCompletion.create(model="llama-2-70b-chat",
+                                    messages=[{"role": "system", "content": "You are an AI assistant that specializes in PetSmart and Dogs. Your task is to generate 20 questions related to puppy and dog care such as potty training, behavior training, and taking care of your pet (grooming, bathing, feeding schedules). The questions should also include specific questions about how to take care of puppies and dogs."},
+                                    {"role": "user", "content": "Generate questions based on retail puppy care, grooming, bathing, potty training."}],
+                                    max_tokens=1500)
+    bulleted_list = [line.strip() for line in response.message.split('\n') if line.strip().startswith(tuple('123456789'))]
+    cleaned_list = [re.sub(r'^[0-9.]+\s*', '', item).strip() for item in bulleted_list]
+    question_list += cleaned_list
+    # question_list.append(cleaned_list)
+
+print(len(question_list))
+question_list
+
+# COMMAND ----------
+
 import pandas as pd
-questions_df = spark.createDataFrame(pd.DataFrame({"question": question_list}))
-display(questions_df)
+question_df = spark.createDataFrame(pd.DataFrame({"question": question_list}))
+display(question_df)
 
 # COMMAND ----------
 
@@ -278,7 +327,7 @@ def send_requests_to_endpoint_and_wait_for_payload_to_be_available(endpoint_name
 
 # COMMAND ----------
 
-send_requests_to_endpoint_and_wait_for_payload_to_be_available(endpoint_name=serving_endpoint_name, question_df=questions_df, limit=40)
+send_requests_to_endpoint_and_wait_for_payload_to_be_available(endpoint_name=serving_endpoint_name, question_df=question_df, limit=81)
 
 # COMMAND ----------
 

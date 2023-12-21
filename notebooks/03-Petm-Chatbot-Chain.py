@@ -56,18 +56,11 @@ print(chain.invoke({"question": "What is PetSmart?"}))
 
 # COMMAND ----------
 
-# prompt_with_history_str = """
-# Your are a Big Data chatbot. Please answer Big Data question only. If you don't know or not related to Big Data, don't answer.
-
-# Here is a history between you and a human: {chat_history}
-
-# Now, please answer this question: {question}
-# """
-
-# prompt_with_history = PromptTemplate(
-#   input_variables = ["chat_history", "question"],
-#   template = prompt_with_history_str
-# )
+# MAGIC %md Concepts to note:
+# MAGIC - `RunnableLambda` runs custom functions and wraps it within a chain (https://python.langchain.com/docs/expression_language/how_to/functions)
+# MAGIC - `RunnableParallel` useful for manipulating output of one Runnable to match the input format of next Runnable in sequence; eg map with keys "context" and "question" (https://python.langchain.com/docs/expression_language/how_to/map)
+# MAGIC - `itemgetter` Python operation that returns a callable object that fetches item
+# MAGIC - `RunnableBranch` dynamically routes logic based on input based on if conditions are met (https://python.langchain.com/docs/expression_language/how_to/routing)
 
 # COMMAND ----------
 
@@ -83,37 +76,6 @@ prompt_with_history = PromptTemplate(
   input_variables = ["chat_history", "question"],
   template = prompt_with_history_str
 )
-
-# COMMAND ----------
-
-# from langchain.schema.runnable import RunnableLambda
-# from operator import itemgetter
-
-# #The question is the last entry of the history
-# def extract_question(input):
-#     return input[-1]["content"]
-
-# #The history is everything before the last question
-# def extract_history(input):
-#     return input[:-1]
-
-# chain_with_history = (
-#     {
-#         "question": itemgetter("messages") | RunnableLambda(extract_question),
-#         "chat_history": itemgetter("messages") | RunnableLambda(extract_history),
-#     }
-#     | prompt_with_history
-#     | chat_model
-#     | StrOutputParser()
-# )
-
-# print(chain_with_history.invoke({
-#     "messages": [
-#         {"role": "user", "content": "What is Apache Spark?"}, 
-#         {"role": "assistant", "content": "Apache Spark is an open-source data processing engine that is widely used in big data analytics."}, 
-#         {"role": "user", "content": "Does it support streaming?"}
-#     ]
-# }))
 
 # COMMAND ----------
 
@@ -158,50 +120,6 @@ print(chain_with_history.invoke({
 # COMMAND ----------
 
 # MAGIC %md Add prompt templates to config file
-
-# COMMAND ----------
-
-# chat_model = ChatDatabricks(endpoint="databricks-llama-2-70b-chat", max_tokens = 200)
-
-# is_question_about_petsmart_str = """
-# You are classifying documents to know if this question is related with Databricks in AWS, Azure and GCP, Workspaces, Databricks account and cloud infrastructure setup, Data Science, Data Engineering, Big Data, Datawarehousing, SQL, Python and Scala or something from a very different field. Also answer no if the last part is inappropriate. 
-
-# Here are some examples:
-
-# Question: Knowing this followup history: What is Databricks?, classify this question: Do you have more details?
-# Expected Response: Yes
-
-# Question: Knowing this followup history: What is Databricks?, classify this question: Write me a song.
-# Expected Response: No
-
-# Only answer with "yes" or "no". 
-
-# Knowing this followup history: {chat_history}, classify this question: {question}
-# """
-
-# is_question_about_petsmart_prompt = PromptTemplate(
-#   input_variables= ["chat_history", "question"],
-#   template = is_question_about_petsmart_str
-# )
-
-# is_about_petsmart_chain = (
-#     {
-#         "question": itemgetter("messages") | RunnableLambda(extract_question),
-#         "chat_history": itemgetter("messages") | RunnableLambda(extract_history),
-#     }
-#     | is_question_about_databricks_prompt
-#     | chat_model
-#     | StrOutputParser()
-# )
-
-# #Returns "Yes" as this is about Databricks: 
-# print(is_about_databricks_chain.invoke({
-#     "messages": [
-#         {"role": "user", "content": "What is Apache Spark?"}, 
-#         {"role": "assistant", "content": "Apache Spark is an open-source data processing engine that is widely used in big data analytics."}, 
-#         {"role": "user", "content": "Does it support streaming?"}
-#     ]
-# }))
 
 # COMMAND ----------
 
@@ -416,11 +334,17 @@ def test_demo_permissions(host, secret_scope, secret_key, vs_endpoint_name, inde
 
 # COMMAND ----------
 
+# MAGIC %md ADD TO CONFIG
+
+# COMMAND ----------
+
 catalog = "main"
 db = "databricks_petm_chatbot"
-index_name=f"{catalog}.{db}.web_style_data_embedded_index"
+index_name=f"{catalog}.{db}.petm_data_embedded_index"
 host = "https://" + spark.conf.get("spark.databricks.workspaceUrl")
 VECTOR_SEARCH_ENDPOINT_NAME = "petm_genai_chatbot"
+text_column = "text"
+vsc_columns = ["title", "url", "source"]
 
 # # #Let's make sure the secret is properly setup and can access our vector search index. Check the quick-start demo for more guidance
 # test_demo_permissions(host, secret_scope="nrf-petm-chatbot", secret_key="rag_sp_token", vs_endpoint_name=VECTOR_SEARCH_ENDPOINT_NAME, index_name=index_name, embedding_endpoint_name="databricks-bge-large-en")
@@ -435,11 +359,10 @@ import os
 
 # os.environ['DATABRICKS_TOKEN'] = dbutils.secrets.get("dbdemos", "rag_sp_token")
 os.environ['DATABRICKS_TOKEN'] = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
-# DATABRICKS_TOKEN = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
 
 embedding_model = DatabricksEmbeddings(endpoint="databricks-bge-large-en")
 
-def get_retriever(persist_dir: str = None):
+def get_retriever(persist_dir: str = None, columns=vsc_columns):
     os.environ["DATABRICKS_HOST"] = host
     #Get the vector search index
     vsc = VectorSearchClient(workspace_url=host, personal_access_token=os.environ["DATABRICKS_TOKEN"])
@@ -450,7 +373,7 @@ def get_retriever(persist_dir: str = None):
 
     # Create the retriever
     vectorstore = DatabricksVectorSearch(
-        vs_index, text_column="text", embedding=embedding_model, columns=["item_title", "web_item_page_url"]
+        vs_index, text_column="text", embedding=embedding_model, columns=columns
     )
     return vectorstore.as_retriever(search_kwargs={'k': 3})
 
@@ -545,10 +468,10 @@ def format_context(docs):
   # "item_title", "web_item_page_url"
 
 def extract_source_urls(docs):
-    return [d.metadata["web_item_page_url"] for d in docs]
+    return [d.metadata["url"] for d in docs]
   
 def extract_source_titles(docs):
-  return [d.metadata["item_title"] for d in docs]
+  return [d.metadata["title"] for d in docs]
 
 relevant_question_chain = (
   RunnablePassthrough() |
@@ -637,21 +560,7 @@ dialog = {
 }
 print(f'Testing with relevant history and question...')
 response = full_chain.invoke(dialog)
-response 
-
-# COMMAND ----------
-
-def init_experiment_for_batch(demo_name, experiment_name):
-  pat_token = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
-  url = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
-  import requests
-  xp_root_path = f"/dbdemos/experiments/{demo_name}"
-  r = requests.post(f"{url}/api/2.0/workspace/mkdirs", headers = {"Accept": "application/json", "Authorization": f"Bearer {pat_token}"}, json={ "path": xp_root_path})
-  mlflow.set_experiment(f"{xp_root_path}/{experiment_name}")
-
-# COMMAND ----------
-
-# init_experiment_for_batch("chatbot-rag-llm-advanced", "simple")
+response
 
 # COMMAND ----------
 
@@ -693,4 +602,30 @@ model.invoke(dialog)
 
 # COMMAND ----------
 
-display_chat(dialog["messages"], response)
+dialog = {
+    "messages": [
+        {"role": "user", "content": "What is PetSmart?"}, 
+        {"role": "assistant", "content": "PetSmart is a Pet Specialty retailer."},  
+        {"role": "user", "content": "Does PetSmart have a Loyalty Program?"},
+        {"role": "assistant", "content": "Yes, PetSmart has a loyalty program called Treats."},
+        {"role": "user", "content": "How do I sign up for Treats?"}
+    ]
+}
+
+# COMMAND ----------
+
+display_chat(dialog["messages"], model.invoke(dialog))
+
+# COMMAND ----------
+
+dialog = {
+    "messages": [
+        {"role": "user", "content": "What are some best practices for potty training my puppy?"}, 
+        {"role": "assistant", "content": "Pick a feeding schedule and adhere to it. Take your dog outside to the bathroom at the same spot each time.Reward your dog with treats and praise when they go to the bathroom outside. Keep an eye out for problems. Get the right supplies, such as a crate, training pads, and pet-specific cleaning supplies. Be consistent in everything. Stick to a schedule."},
+        {"role": "user", "content": "Does PetSmart sell puppy pads?"}
+    ]
+}
+
+# COMMAND ----------
+
+display_chat(dialog["messages"], model.invoke(dialog))
