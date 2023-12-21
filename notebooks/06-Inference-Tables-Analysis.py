@@ -297,4 +297,8 @@ print(f"You can monitor the performance of your chatbot at {url}")
 
 # COMMAND ----------
 
+display(spark.table(processed_table_name))
+
+# COMMAND ----------
+
 dbutils.notebook.exit(monitor)
