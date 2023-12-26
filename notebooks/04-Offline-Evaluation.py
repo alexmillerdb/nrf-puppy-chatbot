@@ -115,17 +115,6 @@ display(df_qa_with_preds)
 
 # COMMAND ----------
 
-# df_qa = (spark.read.table('evaluation_dataset')
-#                   .selectExpr('question as inputs', 'answer as targets')
-#                   .where("targets is not null")
-#                   .sample(fraction=0.005, seed=40)) #small sample for interactive demo
-
-# df_qa_with_preds = df_qa.withColumn('preds', predict_answer(col('inputs'))).cache()
-
-# display(df_qa_with_preds)
-
-# COMMAND ----------
-
 # MAGIC %md
 # MAGIC
 # MAGIC ##LLMs-as-a-judge: automated LLM evaluation with out of the box and custom GenAI metrics
@@ -243,9 +232,20 @@ df_genai_metrics[df_genai_metrics['answer_correctness/v1/score'] == 3]
 
 # COMMAND ----------
 
-# MAGIC %md ## Tag model as production ready if it meets expectations
+# MAGIC %md ### Log evaluation metrics to model
 
 # COMMAND ----------
 
 client = MlflowClient()
+model_version = client.get_model_version(name=model_name, version=model_version_to_evaluate)
+with mlflow.start_run(run_id=model_version.run_id):
+    mlflow.log_metrics(eval_results.metrics)
+
+# COMMAND ----------
+
+# MAGIC %md ## Tag model as production ready if it meets expectations
+
+# COMMAND ----------
+
+# client = MlflowClient()
 client.set_registered_model_alias(name=model_name, alias="prod", version=model_version_to_evaluate)

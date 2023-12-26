@@ -4,6 +4,10 @@
 
 # COMMAND ----------
 
+# MAGIC %run ../configs/00-config
+
+# COMMAND ----------
+
 # MAGIC %md Helper function
 
 # COMMAND ----------
@@ -41,7 +45,7 @@ prompt = PromptTemplate(
   input_variables = ["question"],
   template = "You are an assistant. Give a short answer to this question: {question}"
 )
-chat_model = ChatDatabricks(endpoint="databricks-llama-2-70b-chat", max_tokens = 500)
+chat_model = ChatDatabricks(endpoint="databricks-llama-2-70b-chat", max_tokens = 1000)
 
 chain = (
   prompt
@@ -123,7 +127,8 @@ print(chain_with_history.invoke({
 
 # COMMAND ----------
 
-chat_model = ChatDatabricks(endpoint="databricks-llama-2-70b-chat", max_tokens = 200)
+# max_tokens = 500
+# chat_model = ChatDatabricks(endpoint="databricks-llama-2-70b-chat", max_tokens = max_tokens)
 
 is_question_about_petsmart_str = """
 You are classifying documents to know if this question is related with dogs, puppies, pet food, pet supplies, and other dog related items at Pet Specialty retailer. Also answer no if the last part is inappropriate. 
@@ -338,13 +343,13 @@ def test_demo_permissions(host, secret_scope, secret_key, vs_endpoint_name, inde
 
 # COMMAND ----------
 
-catalog = "main"
-db = "databricks_petm_chatbot"
-index_name=f"{catalog}.{db}.petm_data_embedded_index"
-host = "https://" + spark.conf.get("spark.databricks.workspaceUrl")
-VECTOR_SEARCH_ENDPOINT_NAME = "petm_genai_chatbot"
-text_column = "text"
-vsc_columns = ["title", "url", "source"]
+# catalog = "main"
+# db = "databricks_petm_chatbot"
+# index_name=f"{catalog}.{db}.petm_data_embedded_index"
+# host = "https://" + spark.conf.get("spark.databricks.workspaceUrl")
+# VECTOR_SEARCH_ENDPOINT_NAME = "petm_genai_chatbot"
+# text_column = "text"
+# vsc_columns = ["title", "url", "source"]
 
 # # #Let's make sure the secret is properly setup and can access our vector search index. Check the quick-start demo for more guidance
 # test_demo_permissions(host, secret_scope="nrf-petm-chatbot", secret_key="rag_sp_token", vs_endpoint_name=VECTOR_SEARCH_ENDPOINT_NAME, index_name=index_name, embedding_endpoint_name="databricks-bge-large-en")
@@ -358,12 +363,15 @@ from langchain.chains import RetrievalQA
 import os
 
 # os.environ['DATABRICKS_TOKEN'] = dbutils.secrets.get("dbdemos", "rag_sp_token")
+os.environ["DATABRICKS_HOST"] = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
 os.environ['DATABRICKS_TOKEN'] = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
 
 embedding_model = DatabricksEmbeddings(endpoint="databricks-bge-large-en")
+# vsc_columns = ["url", "source"]
 
 def get_retriever(persist_dir: str = None, columns=vsc_columns):
-    os.environ["DATABRICKS_HOST"] = host
+    # os.environ["DATABRICKS_HOST"] = host
+    host = os.environ.get("DATABRICKS_HOST")
     #Get the vector search index
     vsc = VectorSearchClient(workspace_url=host, personal_access_token=os.environ["DATABRICKS_TOKEN"])
     vs_index = vsc.get_index(
@@ -452,7 +460,7 @@ Discussion: {chat_history}
 
 Here's some context which might or might not help you answer: {context}
 
-Answer straight, do not repeat the question, do not start with something like: the answer to the question, do not add "AI" in front of your answer, do not say: here is the answer, do not mention the context or the question.
+Answer straight, do not repeat the question, do not start with something like: the answer to the question, do not add "AI" in front of your answer, do not say: here is the answer, do not mention the context or the question. Always answer the question with a complete response. Never answer with incomplete responses.
 
 Based on this history and context, answer this question: {question}
 """
@@ -545,7 +553,7 @@ dialog = {
 }
 print(f'Testing with relevant history and question...')
 response = full_chain.invoke(dialog)
-response 
+response
 
 # COMMAND ----------
 
@@ -564,6 +572,20 @@ response
 
 # COMMAND ----------
 
+dialog = {
+    "messages": [
+        {"role": "user", "content": "How often should I bathe my puppy, and what shampoos and conditioners are safe to use?"},
+        # {"role": "assistant", "content": "  The frequency of bathing a puppy and the choice of shampoos and conditioners depend on several factors, such as the puppy's age, breed, health, and lifestyle. Generally, it is recommended to bathe a puppy every 4-6 weeks, unless they get dirty or develop a strong doggy odor.\n\nAs for shampoos and conditioners, it's important to use products specifically formulated for puppies' sensitive skin and coat. Look for products that are gentle, tearless, and pH-balanced. Avoid using human shampoos or conditioners on puppies, as they can be too harsh and cause irritation.\n\nTwo safe and effective options for puppy shampoos are the Only Natural Pet 2-in-1 Puppy Shampoo and the earthbath Ultra-Mild Puppy Sh"},
+        # {"role": "user", "content": "The result that was provided was incomplete. Please regenerate but with complete sentences."} 
+    ]
+}
+
+# COMMAND ----------
+
+full_chain.invoke(dialog)
+
+# COMMAND ----------
+
 import cloudpickle
 import pandas as pd
 import mlflow
@@ -578,6 +600,12 @@ with mlflow.start_run(run_name="petm_chatbot_rag") as run:
     input_df = pd.DataFrame({"messages": [dialog]})
     output = full_chain.invoke(dialog)
     signature = infer_signature(input_df, output)
+
+    mlflow.log_param("prompt_with_history_str", prompt_with_history_str)
+    mlflow.log_param("is_question_about_petsmart_str", is_question_about_petsmart_str)
+    mlflow.log_param("generate_query_to_retrieve_context_template", generate_query_to_retrieve_context_template)
+    mlflow.log_param("question_with_history_and_context_str", question_with_history_and_context_str)
+    
 
     model_info = mlflow.langchain.log_model(
         full_chain,

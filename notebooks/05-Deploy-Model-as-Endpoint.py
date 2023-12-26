@@ -169,11 +169,16 @@ question_list
 
 import pandas as pd
 question_df = spark.createDataFrame(pd.DataFrame({"question": question_list}))
-display(question_df)
+question_df.write.format("delta").mode("overwrite").saveAsTable("main.databricks_petm_chatbot.generated_qa_questions")
 
 # COMMAND ----------
 
 # MAGIC %md ### Run load testing
+
+# COMMAND ----------
+
+question_df = spark.table("main.databricks_petm_chatbot.generated_qa_questions")
+display(question_df)
 
 # COMMAND ----------
 
@@ -225,35 +230,52 @@ import numpy as np
 import pandas as pd
 import json
 
-os.environ["DATABRICKS_TOKEN"] = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
+os.environ["DATABRICKS_TOKEN"] = (
+    dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
+)
 
-def get_response_data(question):
+os.environ["DATABRICKS_HOST"] = (
+    dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
+)
+
+os.environ["ENDPOINT_URL"] = os.path.join(
+    dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get(),
+    "serving-endpoints",
+    serving_endpoint_name,
+    "invocations",
+)
+
+
+def get_response_data(question: str):
+    
     return {
-        'columns': ['messages'],
-        'data': [
-            [
-                {
-                    'messages': [
-                        {
-                            'role': 'user',
-                            'content': f"{question}"
-                        }
-                    ]
-                }
-            ]
-        ]
+        "columns": ["messages"],
+        "data": [[{"messages": [{"role": "user", "content": f"{question}"}]}]],
     }
 
-def score_model(dataset):
-    url = 'https://adb-6042569476650449.9.azuredatabricks.net/serving-endpoints/petm_chatbot_endpoint_main_databricks_petm_chatbot/invocations'
-    headers = {'Authorization': f'Bearer {os.environ.get("DATABRICKS_TOKEN")}', 'Content-Type': 'application/json'}
-    ds_dict = {'dataframe_split': dataset}
+
+def score_model(dataset: dict):
+    
+    url = os.environ.get("ENDPOINT_URL")
+    headers = {
+        "Authorization": f'Bearer {os.environ.get("DATABRICKS_TOKEN")}',
+        "Content-Type": "application/json",
+    }
+    ds_dict = {"dataframe_split": dataset}
     data_json = json.dumps(ds_dict, allow_nan=True)
-    response = requests.request(method='POST', headers=headers, url=url, data=data_json)
+    response = requests.request(method="POST", headers=headers, url=url, data=data_json)
     if response.status_code != 200:
-        raise Exception(f'Request failed with status {response.status_code}, {response.text}')
+        raise Exception(
+            f"Request failed with status {response.status_code}, {response.text}"
+        )
 
     return response.json()
+
+# COMMAND ----------
+
+request = get_response_data(question="How often should I bathe my puppy, and what shampoos and conditioners are safe to use?")
+response = score_model(dataset=request)
+response
 
 # COMMAND ----------
 
@@ -269,12 +291,13 @@ import numpy as np
 import json
 import re
 
-url = 'https://adb-6042569476650449.9.azuredatabricks.net/serving-endpoints/petm_chatbot_endpoint_main_databricks_petm_chatbot/invocations'
+# url = 'https://adb-6042569476650449.9.azuredatabricks.net/serving-endpoints/petm_chatbot_endpoint_main_databricks_petm_chatbot/invocations'
+url = os.environ.get("ENDPOINT_URL")
 
 # Define the asynchronous function to make API calls
 async def llama(session, url, question, semaphore):
     async with semaphore:  # Acquire a spot in the semaphore
-        url = 'https://adb-6042569476650449.9.azuredatabricks.net/serving-endpoints/petm_chatbot_endpoint_main_databricks_petm_chatbot/invocations'
+        # url = 'https://adb-6042569476650449.9.azuredatabricks.net/serving-endpoints/petm_chatbot_endpoint_main_databricks_petm_chatbot/invocations'
         headers = {'Authorization': f'Bearer {os.environ.get("DATABRICKS_TOKEN")}', 'Content-Type': 'application/json'}
         dataset = get_response_data(question=question)
         data_json = {'dataframe_split': dataset}
