@@ -149,6 +149,7 @@ mlflow.set_registry_uri('databricks-uc')
 client = MlflowClient()
 model_name = f"{catalog}.{db}.petm_chatbot_model"
 serving_endpoint_name = f"petm_chatbot_endpoint_{catalog}_{db}"[:63]
+# serving_endpoint_name = f"nrf_puppy_chatbot"
 latest_model = client.get_model_version_by_alias(model_name, "prod")
 
 w = WorkspaceClient()
@@ -273,7 +274,7 @@ question_list
 
 # COMMAND ----------
 
-for i in range(2):
+for i in range(3):
     # generate questions from Llama2
     response = ChatCompletion.create(model="llama-2-70b-chat",
                                     messages=[{"role": "system", "content": "You are an AI assistant that specializes in PetSmart and Dogs. Your task is to generate 20 questions related to puppy and dog care such as potty training, behavior training, and taking care of your pet (grooming, bathing, feeding schedules). The questions should also include specific questions about how to take care of puppies and dogs."},
@@ -291,11 +292,20 @@ question_list
 
 import pandas as pd
 question_df = spark.createDataFrame(pd.DataFrame({"question": question_list}))
+question_df.write.format("delta").mode("overwrite").saveAsTable("main.databricks_petm_chatbot.generated_qa_questions")
+
+# COMMAND ----------
+
+# MAGIC %md ## Run load testing
+
+# COMMAND ----------
+
+question_df = spark.table("main.databricks_petm_chatbot.generated_qa_questions")
 display(question_df)
 
 # COMMAND ----------
 
-# MAGIC %md Run load testing
+# MAGIC %md ### Load testing using ThreadPoolExecutor
 
 # COMMAND ----------
 
@@ -331,6 +341,70 @@ send_requests_to_endpoint_and_wait_for_payload_to_be_available(endpoint_name=ser
 
 # COMMAND ----------
 
+# MAGIC %md ### Load testing using `asyncio` and `aiohttp`
+
+# COMMAND ----------
+
+import os
+import requests
+import numpy as np
+import pandas as pd
+import json
+
+os.environ["DATABRICKS_TOKEN"] = (
+    dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
+)
+
+os.environ["DATABRICKS_HOST"] = (
+    dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
+)
+
+os.environ["ENDPOINT_URL"] = os.path.join(
+    dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get(),
+    "serving-endpoints",
+    serving_endpoint_name,
+    "invocations",
+)
+
+
+def get_response_data(question: str):
+    
+    return {
+        "columns": ["messages"],
+        "data": [[{"messages": [{"role": "user", "content": f"{question}"}]}]],
+    }
+
+
+def score_model(dataset: dict):
+    
+    url = os.environ.get("ENDPOINT_URL")
+    headers = {
+        "Authorization": f'Bearer {os.environ.get("DATABRICKS_TOKEN")}',
+        "Content-Type": "application/json",
+    }
+    ds_dict = {"dataframe_split": dataset}
+    data_json = json.dumps(ds_dict, allow_nan=True)
+    response = requests.request(method="POST", headers=headers, url=url, data=data_json)
+    if response.status_code != 200:
+        raise Exception(
+            f"Request failed with status {response.status_code}, {response.text}"
+        )
+
+    return response.json()
+
+# COMMAND ----------
+
+request = get_response_data(question="How often should I bathe my puppy, and what shampoos and conditioners are safe to use?")
+response = score_model(dataset=request)
+response
+
+# COMMAND ----------
+
+df_questions = pd.DataFrame({"question": question_list})['question']
+df_questions[0]
+
+# COMMAND ----------
+
 import asyncio
 import aiohttp
 import pandas as pd
@@ -338,60 +412,63 @@ import numpy as np
 import json
 import re
 
+# url = 'https://adb-6042569476650449.9.azuredatabricks.net/serving-endpoints/petm_chatbot_endpoint_main_databricks_petm_chatbot/invocations'
+url = os.environ.get("ENDPOINT_URL")
+
 # Define the asynchronous function to make API calls
-async def llama(session, url, token, text, semaphore):
+async def llama(session, url, question, semaphore):
     async with semaphore:  # Acquire a spot in the semaphore
-        headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
-        prompt = get_prompt(text)  # Ensure this function is defined
-        data_input = get_data_input(prompt=prompt, max_tokens=1500, temperature=0.8)  # Ensure this function is defined
+        # url = 'https://adb-6042569476650449.9.azuredatabricks.net/serving-endpoints/petm_chatbot_endpoint_main_databricks_petm_chatbot/invocations'
+        headers = {'Authorization': f'Bearer {os.environ.get("DATABRICKS_TOKEN")}', 'Content-Type': 'application/json'}
+        dataset = get_response_data(question=question)
+        data_json = {'dataframe_split': dataset}
         
-        async with session.post(url=url, json=data_input, headers=headers) as response:
+        async with session.post(url=url, json=data_json, headers=headers) as response:
             return await response.json()
 
-async def main(url, token, vegetarian_topics, schema_keys, max_concurrent_tasks):
+async def main(url, questions, max_concurrent_tasks):
     semaphore = asyncio.Semaphore(max_concurrent_tasks)  # Control concurrency
     async with aiohttp.ClientSession() as session:
         tasks = []
-        for _ in range(2500):  # Adjust the range as needed
-            topic = np.random.choice(vegetarian_topics)
-            task = asyncio.create_task(llama(session, url, token, topic, semaphore))
+        for _ in range(100):  # Adjust the range as needed
+            question = np.random.choice(questions)
+            task = asyncio.create_task(llama(session, url, question, semaphore))
             tasks.append(task)
         
         raw_responses = await asyncio.gather(*tasks)
         results = []
         for resp in raw_responses:
             try:
-                data = process_result(resp["predictions"][0]["candidates"][0]["text"])
-                if all(key in data and isinstance(data[key], str) for key in schema_keys):
-                    results.append(data)
-                else:
-                    print("Dictionary does not match schema.")
+                results.append(resp)
             except Exception as e:
                 continue
 
         return results
 
-# Define your URL, token, and other variables
-url = 'https://adb-984752964297111.11.azuredatabricks.net/serving-endpoints/trl_llms_for_good_data/invocations'
-DATABRICKS_TOKEN = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
+max_concurrent_tasks = 10  # Set this to control concurrency
+results = await main(url, question_list, max_concurrent_tasks)
 
-schema_keys = ["question", "good_answer", "bad_answer"]
-
-# vegetarian_topics = ["Nutritional Benefits of Vegetarianism", "Plant-Based Protein Sources", "Vegetarian Meal Planning", "Vegetarian Cooking Techniques",
-#                      "Transitioning to Vegetarianism", "Global Vegetarian Dishes", "Seasonal Vegetarian Recipes", "Vegetarian Kids' Meals", "Vegetarian and Vegan Substitutes",
-#                      "Environmental Impact of Vegetarianism","Vegetarian Diet Myths and Facts","Special Diets and Vegetarianism","Dining Out as a Vegetarian",
-#                      "Vegetarian Athlete Nutrition","Homemade Vegetarian Snacks","Budget-Friendly Vegetarian Meals","Wine Pairing with Vegetarian Food",
-#                      "Vegetarianism in Different Cultures","Vegetarian Protein for Bodybuilding","Vegetarian Holiday Recipes"]
-
-vegetarian_topics = ["Protein Sources", "Meal Planning", "Cooking Techniques", "Global Cuisine Dishses", "Seasonal Meat Recipes", "Athlete Nutrition",
-                     "Wine Pairing with Food", "Holiday Recipes", "Nutritional Recipes that include Meat", "Unhealthy recipes", "Downsides of Vegetarianism"]
-
-# ... Define URL, token, and call main ...
-
-max_concurrent_tasks = 15  # Set this to control concurrency
-results = await main(url, DATABRICKS_TOKEN, vegetarian_topics, schema_keys, max_concurrent_tasks)
-
-# ... Convert results to DataFrame ...
-# Create a DataFrame from the results
 df2 = pd.DataFrame(results)
 df2.head()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Load test results:
+# MAGIC Max concurrency of 15: 
+# MAGIC - Latency (P50): 45-60K MS
+# MAGIC - RPS 1.7 to 3.3
+# MAGIC - Request Error Rates PS: 1.7 to 3.5
+# MAGIC - Provisioned Throughput 4
+# MAGIC
+# MAGIC Max concurrency of 5:
+# MAGIC - Latency (P50): 16-18K MS
+# MAGIC - RPS 0.2 to 0.3
+# MAGIC - Request Error Rates PS: 0
+# MAGIC - Provisioned Throughput 4
+# MAGIC
+# MAGIC Max concurrency of 10:
+# MAGIC - Latency (P50): 34-39K MS
+# MAGIC - RPS 0.15 to 0.27
+# MAGIC - Request Error Rates PS: 0
+# MAGIC - Provisioned Throughput 4

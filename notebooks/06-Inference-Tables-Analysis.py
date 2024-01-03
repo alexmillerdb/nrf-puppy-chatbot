@@ -28,6 +28,7 @@ checkpoint_location = dbutils.widgets.get("checkpoint_location")
 
 import requests
 from typing import Dict
+from pyspark.sql import functions as F
 
 
 def get_endpoint_status(endpoint_name: str) -> Dict:
@@ -60,7 +61,9 @@ processed_table_name = f"{auto_capture_config['table_name_prefix']}_processed"
 processed_table_name = f"`{catalog}`.`{schema}`.`{processed_table_name}`"
 print(f"Processed requests with text evaluation metrics will be saved to: {processed_table_name}")
 
-payloads = spark.table(payload_table_name).where('status_code == 200').limit(10)
+payloads = spark.table(payload_table_name) \
+    .filter(F.col("date")=="2024-01-03")
+    # .where('status_code == 200').limit(10)
 display(payloads)
 
 # COMMAND ----------

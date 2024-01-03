@@ -41,7 +41,7 @@ prompt = PromptTemplate(
   input_variables = ["question"],
   template = "You are an assistant. Give a short answer to this question: {question}"
 )
-chat_model = ChatDatabricks(endpoint="databricks-llama-2-70b-chat", max_tokens = 500)
+chat_model = ChatDatabricks(endpoint="databricks-llama-2-70b-chat", max_tokens = 1000)
 
 chain = (
   prompt
@@ -123,7 +123,7 @@ print(chain_with_history.invoke({
 
 # COMMAND ----------
 
-chat_model = ChatDatabricks(endpoint="databricks-llama-2-70b-chat", max_tokens = 200)
+# chat_model = ChatDatabricks(endpoint="databricks-llama-2-70b-chat", max_tokens = 200)
 
 is_question_about_petsmart_str = """
 You are classifying documents to know if this question is related with dogs, puppies, pet food, pet supplies, and other dog related items at Pet Specialty retailer. Also answer no if the last part is inappropriate. 
