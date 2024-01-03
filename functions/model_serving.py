@@ -9,9 +9,11 @@ spark = SparkSession.builder.getOrCreate()
 dbutils = DBUtils(spark)
 
 class EndpointApiClient:
-    def __init__(self):
-        self.base_url =dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
-        self.token = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
+    def __init__(self, base_url, token):
+        # self.base_url =dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
+        # self.token = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
+        self.base_url = base_url
+        self.token = token
         self.headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
 
     def create_inference_endpoint(self, endpoint_name, served_models, auto_capture_config = None):

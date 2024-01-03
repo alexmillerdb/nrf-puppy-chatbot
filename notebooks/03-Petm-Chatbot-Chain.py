@@ -1,5 +1,5 @@
 # Databricks notebook source
-# MAGIC %pip install mlflow==2.9.0 langchain==0.0.344 databricks-vectorsearch==0.22 cloudpickle==2.2.1 databricks-sdk==0.12.0 cloudpickle==2.2.1 pydantic==2.5.2
+# MAGIC %pip install mlflow==2.9.0 langchain==0.0.344 databricks-vectorsearch==0.20 cloudpickle==2.2.1 databricks-sdk==0.12.0 cloudpickle==2.2.1 pydantic==2.5.2
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
@@ -352,7 +352,7 @@ def test_demo_permissions(host, secret_scope, secret_key, vs_endpoint_name, inde
 # vsc_columns = ["title", "url", "source"]
 
 # # #Let's make sure the secret is properly setup and can access our vector search index. Check the quick-start demo for more guidance
-# test_demo_permissions(host, secret_scope="nrf-petm-chatbot", secret_key="rag_sp_token", vs_endpoint_name=VECTOR_SEARCH_ENDPOINT_NAME, index_name=index_name, embedding_endpoint_name="databricks-bge-large-en")
+test_demo_permissions(host, secret_scope="nrf-petm-chatbot", secret_key="rag_sp_token", vs_endpoint_name=VECTOR_SEARCH_ENDPOINT_NAME, index_name=index_name, embedding_endpoint_name="databricks-bge-large-en")
 
 # COMMAND ----------
 
@@ -363,8 +363,9 @@ from langchain.chains import RetrievalQA
 import os
 
 # os.environ['DATABRICKS_TOKEN'] = dbutils.secrets.get("dbdemos", "rag_sp_token")
-os.environ["DATABRICKS_HOST"] = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
+os.environ['DATABRICKS_HOST'] = "https://" + spark.conf.get("spark.databricks.workspaceUrl")
 os.environ['DATABRICKS_TOKEN'] = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
+# os.environ['DATABRICKS_TOKEN'] = "dapi169667c2a68349cbd9dc14d56f3bd17c"
 
 embedding_model = DatabricksEmbeddings(endpoint="databricks-bge-large-en")
 # vsc_columns = ["url", "source"]
@@ -373,7 +374,7 @@ def get_retriever(persist_dir: str = None, columns=vsc_columns):
     # os.environ["DATABRICKS_HOST"] = host
     host = os.environ.get("DATABRICKS_HOST")
     #Get the vector search index
-    vsc = VectorSearchClient(workspace_url=host, personal_access_token=os.environ["DATABRICKS_TOKEN"])
+    vsc = VectorSearchClient(workspace_url=host, personal_access_token=os.environ.get("DATABRICKS_TOKEN"))
     vs_index = vsc.get_index(
         endpoint_name=VECTOR_SEARCH_ENDPOINT_NAME,
         index_name=index_name
@@ -592,6 +593,14 @@ import mlflow
 from mlflow.models import infer_signature
 import langchain
 
+# COMMAND ----------
+
+import cloudpickle
+import pandas as pd
+import mlflow
+from mlflow.models import infer_signature
+import langchain
+
 mlflow.set_registry_uri("databricks-uc")
 model_name = f"{catalog}.{db}.petm_chatbot_model"
 
@@ -615,7 +624,7 @@ with mlflow.start_run(run_name="petm_chatbot_rag") as run:
         pip_requirements=[
             "mlflow==" + mlflow.__version__,
             "langchain==" + langchain.__version__,
-            "databricks-vectorsearch",
+            "databricks-vectorsearch==0.20",
             "pydantic==2.5.2 --no-binary pydantic",
             "cloudpickle=="+ cloudpickle.__version__
         ],
