@@ -13,6 +13,8 @@ VECTOR_SEARCH_ENDPOINT_NAME = "petm_genai_chatbot"
 catalog = "main"
 db = "databricks_petm_chatbot"
 source_table = "petm_data_embedded"
+secret_scope_name = "NRF_PUPPY_CHATBOT"
+secret_key_name = "PAT"
 
 # COMMAND ----------
 
@@ -149,7 +151,7 @@ mlflow.set_registry_uri('databricks-uc')
 client = MlflowClient()
 model_name = f"{catalog}.{db}.petm_chatbot_model"
 serving_endpoint_name = f"petm_chatbot_endpoint_{catalog}_{db}"[:63]
-# serving_endpoint_name = f"nrf_puppy_chatbot"
+# serving_endpoint_name = f"nrf_puppy_chatbot_test"
 latest_model = client.get_model_version_by_alias(model_name, "prod")
 
 w = WorkspaceClient()
@@ -161,7 +163,7 @@ auto_capture_config = {
     "schema_name": db,
     "table_name_prefix": serving_endpoint_name
     }
-environment_vars={"DATABRICKS_TOKEN": "{{secrets/nrf-petm-chatbot/rag_sp_token}}"}
+environment_vars = { "DATABRICKS_TOKEN": f"{{{{secrets/{secret_scope_name}/{secret_key_name}}}}}" }
 serving_client.create_endpoint_if_not_exists(serving_endpoint_name, 
                                              model_name=model_name, 
                                              model_version = latest_model.version, 
@@ -187,16 +189,6 @@ df_split = DataframeSplitInput(columns=["messages"],
                                data=[[ {"messages": [{"role": "user", "content": "What is PetSmart?"}, 
                                                      {"role": "assistant", "content": "PetSmart is a Pet Specialty retailer."}, 
                                                      {"role": "user", "content": "Does PetSmart sell dog food for small breed dogs like chihuahuas?"}
-                                                    ]}]])
-w = WorkspaceClient()
-w.serving_endpoints.query(serving_endpoint_name, dataframe_split=df_split)
-
-# COMMAND ----------
-
-df_split = DataframeSplitInput(columns=["messages"],
-                               data=[[ {"messages": [{"role": "user", "content": "What is PetSmart?"}, 
-                                                     {"role": "assistant", "content": "PetSmart is a Pet Specialty retailer."}, 
-                                                     {"role": "user", "content": "I have German Shepherd adult dog that is sensitive to Chicken treats. Are there other treats that do not have chicken you could recommend?"}
                                                     ]}]])
 w = WorkspaceClient()
 w.serving_endpoints.query(serving_endpoint_name, dataframe_split=df_split)
@@ -400,8 +392,151 @@ response
 
 # COMMAND ----------
 
-df_questions = pd.DataFrame({"question": question_list})['question']
-df_questions[0]
+# MAGIC %md ### Mimic a chat history
+
+# COMMAND ----------
+
+df_questions = question_df.toPandas()
+question_list = df_questions["question"].to_list()
+question_list
+
+# COMMAND ----------
+
+chat_session = []
+
+for question in df_questions.iloc[0:10]['question']:
+    request = get_response_data(question=question)
+    response = score_model(dataset=request)
+    chat_session += [{"role": "user", "content": f"{question}"},
+                     {"role": "assistant", "content": f"{response['predictions'][0]['result']}"}]
+    
+    print(chat_session)
+
+# COMMAND ----------
+
+len(chat_session)
+
+# COMMAND ----------
+
+dialog_test = {
+    "columns": ["messages"],
+    "data": [
+        [
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "What are the best food options for a puppy German Shepherd with sensitive skin?",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "  Based on the information provided, the best food options for a puppy German Shepherd with sensitive skin are Royal Canin Breed Health Nutrition German Shepherd Puppy Dry Dog Food and Hill's Prescription Diet Derm Complete Puppy Environmental/Food Sensitivities Dry Dog Food. Both foods are specifically formulated to support the skin's barriers against environmental irritants and provide nutritional support for building skin health. Additionally, they both contain ingredients that are easy to digest and are designed to promote healthy digestion. It's important to consult with a veterinarian to determine the best food option for your puppy's specific needs.",
+                    },
+                    {
+                        "role": "user",
+                        "content": "How can I transition my adult dog from a puppy food to an adult food?",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "  According to the information provided, it is recommended to gradually transition your adult dog from puppy food to adult food over a 7-10 day period. Replace 25% of the current diet with the new diet every 2-3 days until they are fully transitioned. It's also recommended to consult with your veterinarian for specific recommendations on transitioning your dog's diet and to ensure that the dog is healthy enough for the transition.",
+                    },
+                    {
+                        "role": "user",
+                        "content": "What are the best senior dog food options for a dog with joint issues?",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Eukanuba Senior Small Breed Dry Dog Food and Eukanuba Senior Medium Breed Dry Dog Food are both good options for senior dogs with joint issues. They both contain glucosamine and chondroitin sulfate, which support joint health and mobility. Additionally, they have optimal levels of fats and carbohydrates to help maintain energy levels and support active lifestyles. They also provide immune system support and dental care.",
+                    },
+                    {
+                        "role": "user",
+                        "content": "My dog has a sensitive stomach, what are some limited ingredient dog food options?",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "  Limited ingredient dog food options for sensitive stomachs include:\n\n1. Hill's Science Diet Sensitive Stomach & Skin Small Breed Adult Dry Dog Food - Chicken & Barley\n2. Purina Pro Plan Specialized Adult Dry Dog Food - Sensitive Skin & Stomach, Turkey & Oatmeal\n3. Purina Pro Plan Sensitive Skin & Stomach Adult Dry Dog Food - Salmon & Rice",
+                    },
+                    {
+                        "role": "user",
+                        "content": "What are the best dog treats for a puppy in training?",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "  Wellness Soft Puppy Bites Natural Dog Treats - Natural, Lamb & Salmon.",
+                    },
+                    {
+                        "role": "user",
+                        "content": "Can you recommend a high-protein dog food for my active German Shepherd?",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "  Sure! Based on your dog's activity level and breed size, I would recommend the Purina Pro Plan Sport All Life Stage Dry Dog Food - High Energy, High Protein, Salmon & Rice. It has a high protein content of 30% and 20% fat, which will support your dog's metabolic needs and help maintain lean, strong muscles. Additionally, it contains EPA and glucosamine for joint health and mobility, as well as guaranteed live probiotics for digestive and immune health. This recipe is designed for highly active dogs, including hunting and sporting dogs, and competitive canine athletes, making it a great fit for your German Shepherd.",
+                    },
+                    {
+                        "role": "user",
+                        "content": "What are the best toys for a puppy going through teething?",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "The best toys for a puppy going through teething are the Playology Puppy Teething Ball Dog Toy - Beef, the Playology Puppy Teething Ball Dog Toy - Peanut Butter, and the Playology Puppy Teething Ring Dog Toy - Peanut Butter. These toys are designed specifically for teething puppies and are made with natural rubber that is gentle on their gums. They also have unique textures and sounds that make them enticing for puppies to chew on, and they are built to last with puncture-resistant construction. Additionally, they use Playology's scent technology to drive 7 times more engagement than unscented toys, providing hours of stimulating playtime for teething puppies.",
+                    },
+                    {
+                        "role": "user",
+                        "content": "How often should I feed my senior dog to prevent weight gain?",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "  Once or twice a day. You can start with the recommended amount on the package and adjust accordingly to maintain your dog's weight. It's also important to consult with your veterinarian for specific feeding instructions tailored to your dog's individual needs.",
+                    },
+                    {
+                        "role": "user",
+                        "content": "What are some hypoallergenic dog food options for a dog with food allergies?",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "  There are several hypoallergenic dog food options available for dogs with food allergies. Some examples include:\n\n1. Limited Ingredient Diets (LIDs): These dog foods contain a minimal number of ingredients, which can help reduce the risk of an allergic reaction. They typically include a single protein source and a single carbohydrate source.\n\n2. Novel Protein Diets: These dog foods use proteins that are not commonly found in traditional dog foods, such as venison, duck, or salmon. This can help reduce the risk of an allergic reaction for dogs that have developed allergies to more common proteins like beef or chicken.\n\n3. Grain-Free Diets: Some dogs may have allergies to grains such as wheat, corn, or soy. Grain-free dog foods eliminate these ingredients, which can help alleviate symptoms of food allergies.\n\n4. Raw Diet: Some dog owners opt for a raw diet, which consists of uncooked meat, fruits, and vegetables. This diet can be beneficial for dogs with food allergies, as it eliminates the processing and preservatives found in commercial dog foods.\n\n5. Homemade Diet: Some dog owners choose to prepare a homemade diet for their dog, using ingredients that they know their dog is not allergic to. This can be a time-consuming and expensive option, but it allows for complete control over the ingredients in the dog's diet.\n\nIt's important to note that every dog is different, and what works for one dog may not work for another. If your dog has food allergies, it's best to work with your veterinarian to determine the best diet for their specific needs.",
+                    },
+                    {
+                        "role": "user",
+                        "content": "What are the best dog food options for a small breed dog like a Chihuahua?",
+                    },
+                ]
+            }
+        ]
+    ],
+}
+
+# COMMAND ----------
+
+response = score_model(dataset=dialog_test)
+response
+
+# COMMAND ----------
+
+dialog_test = {
+    "columns": ["messages"],
+    "data": [
+        [
+            {
+                "messages": [{'role': 'user',
+  'content': 'How often should I feed my senior dog to prevent weight gain?'},
+ {'role': 'assistant',
+  'content': "  Once or twice a day. You can start with the recommended amount on the package and adjust accordingly to maintain your dog's weight. It's also important to consult with your veterinarian for specific feeding instructions tailored to your dog's individual needs."},
+ {'role': 'user',
+  'content': 'What are some hypoallergenic dog food options for a dog with food allergies?'},
+ {'role': 'assistant',
+  'content': "  There are several hypoallergenic dog food options available for dogs with food allergies. Some examples include:\n\n1. Limited Ingredient Diets (LIDs): These dog foods contain a minimal number of ingredients, which can help reduce the risk of an allergic reaction. They typically include a single protein source and a single carbohydrate source.\n\n2. Novel Protein Diets: These dog foods use proteins that are not commonly found in traditional dog foods, such as venison, duck, or salmon. This can help reduce the risk of an allergic reaction for dogs that have developed allergies to more common proteins like beef or chicken.\n\n3. Grain-Free Diets: Some dogs may have allergies to grains such as wheat, corn, or soy. Grain-free dog foods eliminate these ingredients, which can help alleviate symptoms of food allergies.\n\n4. Raw Diet: Some dog owners opt for a raw diet, which consists of uncooked meat, fruits, and vegetables. This diet can be beneficial for dogs with food allergies, as it eliminates the processing and preservatives found in commercial dog foods.\n\n5. Homemade Diet: Some dog owners choose to prepare a homemade diet for their dog, using ingredients that they know their dog is not allergic to. This can be a time-consuming and expensive option, but it allows for complete control over the ingredients in the dog's diet.\n\nIt's important to note that every dog is different, and what works for one dog may not work for another. If your dog has food allergies, it's best to work with your veterinarian to determine the best diet for their specific needs."},
+ {'role': 'user',
+  'content': 'What are the best dog food options for a small breed dog like a Chihuahua?'}]
+            }
+        ]
+    ],
+}
+
+# COMMAND ----------
+
+response = score_model(dataset=dialog_test)
+response
 
 # COMMAND ----------
 
@@ -411,8 +546,8 @@ import pandas as pd
 import numpy as np
 import json
 import re
+import os
 
-# url = 'https://adb-6042569476650449.9.azuredatabricks.net/serving-endpoints/petm_chatbot_endpoint_main_databricks_petm_chatbot/invocations'
 url = os.environ.get("ENDPOINT_URL")
 
 # Define the asynchronous function to make API calls

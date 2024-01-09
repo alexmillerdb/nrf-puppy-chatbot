@@ -7,7 +7,7 @@
 VECTOR_SEARCH_ENDPOINT_NAME = "petm_genai_chatbot"
 catalog = "main"
 db = "databricks_petm_chatbot"
-source_table = "web_style_data_embedded"
+source_table = "petm_data_embedded"
 model_name = f"{catalog}.{db}.petm_chatbot_model"
 serving_endpoint_name = f"petm_chatbot_endpoint_{catalog}_{db}"[:63]
 
@@ -64,6 +64,13 @@ print(f"Processed requests with text evaluation metrics will be saved to: {proce
 payloads = spark.table(payload_table_name) \
     .filter(F.col("date")=="2024-01-03")
     # .where('status_code == 200').limit(10)
+display(payloads)
+
+# COMMAND ----------
+
+payloads = spark.table(payload_table_name) \
+    .filter(F.col("date")=="2024-01-03")
+
 display(payloads)
 
 # COMMAND ----------

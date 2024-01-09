@@ -248,4 +248,7 @@ df_genai_metrics[df_genai_metrics['answer_correctness/v1/score'] == 3]
 # COMMAND ----------
 
 client = MlflowClient()
+model_version = client.get_model_version(name=model_name, version=model_version_to_evaluate)
+with mlflow.start_run(run_id=model_version.run_id):
+    mlflow.log_metrics(eval_results.metrics)
 client.set_registered_model_alias(name=model_name, alias="prod", version=model_version_to_evaluate)

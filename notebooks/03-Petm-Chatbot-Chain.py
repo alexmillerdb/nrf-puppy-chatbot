@@ -1,5 +1,5 @@
 # Databricks notebook source
-# MAGIC %pip install mlflow==2.9.0 langchain==0.0.344 databricks-vectorsearch==0.22 cloudpickle==2.2.1 databricks-sdk==0.12.0 cloudpickle==2.2.1 pydantic==2.5.2
+# MAGIC %pip install mlflow==2.9.0 langchain==0.0.344 databricks-vectorsearch==0.22 cloudpickle==2.2.1 databricks-sdk==0.12.0 cloudpickle==2.2.1 pydantic==2.5.2 transformers==4.34.0
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
@@ -41,7 +41,7 @@ prompt = PromptTemplate(
   input_variables = ["question"],
   template = "You are an assistant. Give a short answer to this question: {question}"
 )
-chat_model = ChatDatabricks(endpoint="databricks-llama-2-70b-chat", max_tokens = 1000)
+chat_model = ChatDatabricks(endpoint="databricks-llama-2-70b-chat", max_tokens = 500)
 
 chain = (
   prompt
@@ -79,16 +79,179 @@ prompt_with_history = PromptTemplate(
 
 # COMMAND ----------
 
+# MAGIC %md ### Truncating Chat History length
+
+# COMMAND ----------
+
+import transformers
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("hf-internal-testing/llama-tokenizer")
+
+# COMMAND ----------
+
+def convert_to_chat_hist(python_str):
+    # Splitting the string by 'user:' and 'assistant:' while keeping these delimiters
+    parts = []
+    temp = python_str
+    for delimiter in ["user:", "assistant:"]:
+        if temp:
+            split_text = temp.split(delimiter)
+            first = split_text.pop(0)
+            temp = delimiter.join(split_text)
+            if first:
+                parts.append(first)
+            parts.extend([delimiter + s for s in split_text])
+
+    # Removing empty strings if any
+    parts = [part for part in parts if part.strip()]
+
+    # Parsing each part into role and content
+    messages = []
+    for part in parts:
+        if part.startswith("user:"):
+            role = "user"
+        elif part.startswith("assistant:"):
+            role = "assistant"
+        else:
+            continue  # Skip if it doesn't start with a known role
+
+        content = part[len(role) + 1:].strip()  # +1 for the colon after the role
+        messages.append({"role": role, "content": content})
+
+    return {"messages": messages}
+
+# COMMAND ----------
+
+def truncate_chat_history(chat_hist):
+    # Function to tokenize and count tokens
+    def tokenize_and_count(text):
+        tokens = tokenizer.encode(text)
+        return tokens, len(tokens)
+
+    # Extract messages and concatenate them into one string
+    # all_messages = ' '.join([msg['role'] + ": " + msg['content'] for msg in chat_hist['messages']])
+    all_messages = ' '.join([msg['role'] + ": " + msg['content'] for msg in chat_hist])
+    
+    # Tokenize and count tokens in the entire chat
+    tokens, total_count = tokenize_and_count(all_messages)
+    # return total_count
+
+    # If the total token count is more than 750, truncate
+    if total_count > 500:
+        truncated_tokens = tokens[-500:]  # Keep the last 750 tokens
+        truncated_decode = tokenizer.decode(truncated_tokens)
+        return convert_to_chat_hist(truncated_decode)
+    else:
+        return chat_hist
+
+# Example usage
+chat_hist = {
+    "messages": [
+                    {
+                        "role": "user",
+                        "content": "What are the best food options for a puppy German Shepherd with sensitive skin?",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "  Based on the information provided, the best food options for a puppy German Shepherd with sensitive skin are Royal Canin Breed Health Nutrition German Shepherd Puppy Dry Dog Food and Hill's Prescription Diet Derm Complete Puppy Environmental/Food Sensitivities Dry Dog Food. Both foods are specifically formulated to support the skin's barriers against environmental irritants and provide nutritional support for building skin health. Additionally, they both contain ingredients that are easy to digest and are designed to promote healthy digestion. It's important to consult with a veterinarian to determine the best food option for your puppy's specific needs.",
+                    },
+                    {
+                        "role": "user",
+                        "content": "How can I transition my adult dog from a puppy food to an adult food?",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "  According to the information provided, it is recommended to gradually transition your adult dog from puppy food to adult food over a 7-10 day period. Replace 25% of the current diet with the new diet every 2-3 days until they are fully transitioned. It's also recommended to consult with your veterinarian for specific recommendations on transitioning your dog's diet and to ensure that the dog is healthy enough for the transition.",
+                    },
+                    {
+                        "role": "user",
+                        "content": "What are the best senior dog food options for a dog with joint issues?",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Eukanuba Senior Small Breed Dry Dog Food and Eukanuba Senior Medium Breed Dry Dog Food are both good options for senior dogs with joint issues. They both contain glucosamine and chondroitin sulfate, which support joint health and mobility. Additionally, they have optimal levels of fats and carbohydrates to help maintain energy levels and support active lifestyles. They also provide immune system support and dental care.",
+                    },
+                    {
+                        "role": "user",
+                        "content": "My dog has a sensitive stomach, what are some limited ingredient dog food options?",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "  Limited ingredient dog food options for sensitive stomachs include:\n\n1. Hill's Science Diet Sensitive Stomach & Skin Small Breed Adult Dry Dog Food - Chicken & Barley\n2. Purina Pro Plan Specialized Adult Dry Dog Food - Sensitive Skin & Stomach, Turkey & Oatmeal\n3. Purina Pro Plan Sensitive Skin & Stomach Adult Dry Dog Food - Salmon & Rice",
+                    },
+                    {
+                        "role": "user",
+                        "content": "What are the best dog treats for a puppy in training?",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "  Wellness Soft Puppy Bites Natural Dog Treats - Natural, Lamb & Salmon.",
+                    },
+                    {
+                        "role": "user",
+                        "content": "Can you recommend a high-protein dog food for my active German Shepherd?",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "  Sure! Based on your dog's activity level and breed size, I would recommend the Purina Pro Plan Sport All Life Stage Dry Dog Food - High Energy, High Protein, Salmon & Rice. It has a high protein content of 30% and 20% fat, which will support your dog's metabolic needs and help maintain lean, strong muscles. Additionally, it contains EPA and glucosamine for joint health and mobility, as well as guaranteed live probiotics for digestive and immune health. This recipe is designed for highly active dogs, including hunting and sporting dogs, and competitive canine athletes, making it a great fit for your German Shepherd.",
+                    },
+                    {
+                        "role": "user",
+                        "content": "What are the best toys for a puppy going through teething?",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "The best toys for a puppy going through teething are the Playology Puppy Teething Ball Dog Toy - Beef, the Playology Puppy Teething Ball Dog Toy - Peanut Butter, and the Playology Puppy Teething Ring Dog Toy - Peanut Butter. These toys are designed specifically for teething puppies and are made with natural rubber that is gentle on their gums. They also have unique textures and sounds that make them enticing for puppies to chew on, and they are built to last with puncture-resistant construction. Additionally, they use Playology's scent technology to drive 7 times more engagement than unscented toys, providing hours of stimulating playtime for teething puppies.",
+                    },
+                    {
+                        "role": "user",
+                        "content": "How often should I feed my senior dog to prevent weight gain?",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "  Once or twice a day. You can start with the recommended amount on the package and adjust accordingly to maintain your dog's weight. It's also important to consult with your veterinarian for specific feeding instructions tailored to your dog's individual needs.",
+                    },
+                    {
+                        "role": "user",
+                        "content": "What are some hypoallergenic dog food options for a dog with food allergies?",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "  There are several hypoallergenic dog food options available for dogs with food allergies. Some examples include:\n\n1. Limited Ingredient Diets (LIDs): These dog foods contain a minimal number of ingredients, which can help reduce the risk of an allergic reaction. They typically include a single protein source and a single carbohydrate source.\n\n2. Novel Protein Diets: These dog foods use proteins that are not commonly found in traditional dog foods, such as venison, duck, or salmon. This can help reduce the risk of an allergic reaction for dogs that have developed allergies to more common proteins like beef or chicken.\n\n3. Grain-Free Diets: Some dogs may have allergies to grains such as wheat, corn, or soy. Grain-free dog foods eliminate these ingredients, which can help alleviate symptoms of food allergies.\n\n4. Raw Diet: Some dog owners opt for a raw diet, which consists of uncooked meat, fruits, and vegetables. This diet can be beneficial for dogs with food allergies, as it eliminates the processing and preservatives found in commercial dog foods.\n\n5. Homemade Diet: Some dog owners choose to prepare a homemade diet for their dog, using ingredients that they know their dog is not allergic to. This can be a time-consuming and expensive option, but it allows for complete control over the ingredients in the dog's diet.\n\nIt's important to note that every dog is different, and what works for one dog may not work for another. If your dog has food allergies, it's best to work with your veterinarian to determine the best diet for their specific needs.",
+                    },
+                    {
+                        "role": "user",
+                        "content": "What are the best dog food options for a small breed dog like a Chihuahua?",
+                    },
+                ]
+}
+
+truncated_chat = truncate_chat_history(chat_hist['messages'])
+print(truncated_chat)
+
+# COMMAND ----------
+
 from langchain.schema.runnable import RunnableLambda
 from operator import itemgetter
+from transformers import AutoTokenizer
+
+# count tokens of history and return max of 500
+tokenizer = AutoTokenizer.from_pretrained("hf-internal-testing/llama-tokenizer")
+def count_tokens(tokenizer, text):
+    return len(tokenizer.encode(text))
 
 #The question is the last entry of the history
 def extract_question(input):
     return input[-1]["content"]
 
-#The history is everything before the last question
+# #The history is everything before the last question
+# def extract_history(input):
+#     return input[:-1]
+
 def extract_history(input):
-    return input[:-1]
+    return truncate_chat_history(input[:-1])
+    
 
 chain_with_history = (
     {
@@ -100,13 +263,8 @@ chain_with_history = (
     | StrOutputParser()
 )
 
-print(chain_with_history.invoke({
-    "messages": [
-        {"role": "user", "content": "What is PetSmart?"}, 
-        {"role": "assistant", "content": "PetSmart is a retail chain that specializes in pet supplies and services, such as food, toys, grooming, and training for dogs, cats, birds, fish, and other small animals."}, 
-        {"role": "user", "content": "Does it include any Services like dog grooming?"}
-    ]
-}))
+# Test that chat model is truncating chat messages
+print(chain_with_history.invoke(chat_hist))
 
 # COMMAND ----------
 
@@ -432,13 +590,17 @@ output = generate_query_to_retrieve_context_chain.invoke({
 })
 print(f"Test retriever query without history: {output}")
 
-output = generate_query_to_retrieve_context_chain.invoke({
-    "messages": [
-        {"role": "user", "content": "What is the best dog food for my German Shepherd?"},
-        {"role": "assistant", "content": "Royal Canin offers different formulas for German Shepherds depending on dogs needs."},
-        {"role": "user", "content": "What type of flavors does Royal Canin offer for German Shepherds?"}
-    ]
-})
+# output = generate_query_to_retrieve_context_chain.invoke({
+#     "messages": [
+#         {"role": "user", "content": "What is PetSmart?"}, 
+#         {"role": "assistant", "content": "PetSmart is a Pet Specialty retailer."},  
+#         {"role": "user", "content": "Does PetSmart sell dog food for small breed dogs like chihuahuas?"},
+#         {"role": "assistant", "content": '  Yes, PetSmart does sell dog food for small breed dogs like Chihuahuas. Royal Canin Breed Health Nutrition Chihuahua Puppy Dry Dog Food is one example of dog food available at PetSmart that is specifically formulated for small breed dogs like Chihuahuas. Additionally, Canidae Pure Petite Small Breed All Life Stage Wet Dog Food is another option available at PetSmart that is designed for small breed dogs, including Chihuahuas.'},
+#         {"role": "user", "content": "I prefer Royal Canin brand, please recommend more of those items."},
+#         {"role": "assistant", "content": """ Sure, here are some Royal Canin dog food products that may be suitable for your Chihuahua, based on their life stage and flavor preferences: 1. Royal Canin Chihuahua Puppy Dry Dog Food - This is a breed-specific puppy food designed for Chihuahuas 8 weeks to 8 months old. It has a unique kibble shape that makes it easy for puppies to pick up and chew, and it contains antioxidants and vitamin E to support their developing immune system.2. Royal Canin Chihuahua Adult Dry Dog Food - This is a breed-specific adult dog food designed for Chihuahuas 8 months and older. It contains highly digestible proteins and precise fiber content to support healthy digestion and reduce stool odor, and it has omega-3 EPA and DHA and biotin to support skin and coat health.3. Royal Canin Chihuahua Adult 8+ Dry Dog Food - This is a breed-specific adult dog food designed for Chihuahuas over 8 years old. It contains the same nutrients as the adult formula but with a more senior-friendly kibble size and texture.4. Royal Canin Chihuahua Wet Dog Food - This is a breed-specific wet dog food designed for Chihuahuas of all life stages. It has a unique texture that makes it easy for Chihuahuas to pick up and eat, and it contains a balanced mix of nutrients and flavors to support their health and well-being.I hope this helps you find the right Royal Canin dog food product for your Chihuahua!"""}
+#         ]
+# })
+output = generate_query_to_retrieve_context_chain.invoke(chat_hist)
 print(f"Test retriever question, summarized with history: {output}")
 
 # COMMAND ----------
@@ -468,10 +630,10 @@ def format_context(docs):
   # "item_title", "web_item_page_url"
 
 def extract_source_urls(docs):
-    return [d.metadata["url"] for d in docs]
+    return list(set([d.metadata["url"] for d in docs]))
   
 def extract_source_titles(docs):
-  return [d.metadata["title"] for d in docs]
+  return list(set([d.metadata["title"] for d in docs]))
 
 relevant_question_chain = (
   RunnablePassthrough() |
@@ -529,6 +691,14 @@ non_relevant_dialog = {
         {"role": "user", "content": "Why is the sky blue?"}
     ]
 }
+
+non_relevant_dialog = {
+    "messages": [
+        {"role": "user", "content": "What is PetSmart?"}, 
+        {"role": "assistant", "content": "PetSmart is a Pet Specialty retailer."}, 
+        {"role": "user", "content": "Who is the best puppy?"}
+    ]
+}
 print(f'Testing with a non relevant question...')
 response = full_chain.invoke(non_relevant_dialog)
 response
@@ -536,16 +706,9 @@ response
 
 # COMMAND ----------
 
-dialog = {
-    "messages": [
-        {"role": "user", "content": "What is PetSmart?"}, 
-        {"role": "assistant", "content": "PetSmart is a Pet Specialty retailer."},  
-        {"role": "user", "content": "Does PetSmart sell dog food for small breed dogs like chihuahuas?"}
-    ]
-}
 print(f'Testing with relevant history and question...')
-response = full_chain.invoke(dialog)
-response 
+response = full_chain.invoke(chat_hist)
+response
 
 # COMMAND ----------
 
@@ -555,12 +718,29 @@ dialog = {
         {"role": "assistant", "content": "PetSmart is a Pet Specialty retailer."},  
         {"role": "user", "content": "Does PetSmart sell dog food for small breed dogs like chihuahuas?"},
         {"role": "assistant", "content": '  Yes, PetSmart does sell dog food for small breed dogs like Chihuahuas. Royal Canin Breed Health Nutrition Chihuahua Puppy Dry Dog Food is one example of dog food available at PetSmart that is specifically formulated for small breed dogs like Chihuahuas. Additionally, Canidae Pure Petite Small Breed All Life Stage Wet Dog Food is another option available at PetSmart that is designed for small breed dogs, including Chihuahuas.'},
-        {"role": "user", "content": "I prefer Royal Canin brand, please recommend more of those items."}
+        {"role": "user", "content": "I prefer Royal Canin brand, please recommend more of those items."},
     ]
 }
 print(f'Testing with relevant history and question...')
 response = full_chain.invoke(dialog)
 response
+
+# COMMAND ----------
+
+# MAGIC %md ### Langchain documented steps/examples
+
+# COMMAND ----------
+
+chain_steps = full_chain.steps
+chain_steps[0].invoke(dialog)
+
+# COMMAND ----------
+
+chain_steps[1]
+
+# COMMAND ----------
+
+# MAGIC %md ### Log to MLflow and UC
 
 # COMMAND ----------
 
@@ -589,7 +769,8 @@ with mlflow.start_run(run_name="petm_chatbot_rag") as run:
             "langchain==" + langchain.__version__,
             "databricks-vectorsearch",
             "pydantic==2.5.2 --no-binary pydantic",
-            "cloudpickle=="+ cloudpickle.__version__
+            "cloudpickle=="+ cloudpickle.__version__,
+            "transformers=="+ transformers.__version__
         ],
         input_example=input_df,
         signature=signature
@@ -598,7 +779,7 @@ with mlflow.start_run(run_name="petm_chatbot_rag") as run:
 # COMMAND ----------
 
 model = mlflow.langchain.load_model(model_info.model_uri)
-model.invoke(dialog)
+model.invoke(chat_hist)
 
 # COMMAND ----------
 
