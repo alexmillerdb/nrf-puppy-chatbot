@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import logging
 import time
 from operator import itemgetter
 
@@ -80,7 +81,32 @@ is_about_petsmart_chain = (
 vsc_columns = ["title", "url", "source"]
 
 
+class VectorSearchTokenFilter(logging.Filter):
+    def __init__(self, module_path):
+        super().__init__()
+        self.module_path = module_path
+
+    @staticmethod
+    def remove_bearer_content(msg):
+        import re
+        # Define a regex pattern to match 'Bearer ' followed by anything
+        pattern = re.compile(r'\'Bearer\s.*\'')
+
+        # Use re.sub to replace the matched pattern with 'Bearer '
+        clean_token = re.sub(pattern, '\'Bearer *****\'', msg)
+
+        return clean_token
+
+    def filter(self, record):
+        # Check if the record's module matches the specified module_name
+        if record.pathname.endswith(self.module_path):
+            record.msg = self.remove_bearer_content(record.msg)
+        return True
+
+
 def get_retriever(columns=None):
+    custom_filter = VectorSearchTokenFilter("databricks/vector_search/utils.py")
+    logging.getLogger().addFilter(custom_filter)
     columns = columns or vsc_columns
     # Get the vector search index
     vsc = VectorSearchClient()
@@ -137,6 +163,7 @@ question_with_history_and_context_prompt = PromptTemplate(
 def format_context(docs):
     return "\n\n".join([d.page_content for d in docs])
 
+
 def extract_source_urls(docs):
     return list(set([d.metadata["url"] for d in docs]))
 
@@ -171,12 +198,13 @@ relevant_question_chain_prompt = (
         }
 )
 
+
 def run_chat_completion(msgs) -> AsyncGeneratorWrapper[HasMessage]:
     resp = ChatCompletion.create(model="llama-2-70b-chat",
                                  messages=[{"role": "system", "content": "You are a helpful assistant."},
                                            *msgs],
                                  temperature=0.1,
-                                 stream=True,)
+                                 stream=True, )
     return AsyncGeneratorWrapper(resp)
 
 
@@ -226,7 +254,7 @@ class PuppyBot(ChainlitChat):
         # mlflow based chat doesnt support streaming so we need to feed to databricks-genai-sdk
         # cannot do this in async due to compressor
         processed_context = await loop.run_in_executor(None, relevant_question_chain_prompt.invoke,
-                                                      history)
+                                                       history)
         processed_prompt = processed_context["prompt"]
         msgs = [{"content": msg.content, "role": "user"} for msg in processed_prompt.to_messages()]
 
