@@ -1,0 +1,15 @@
+chainlit
+langchain
+pydantic
+chromadb==0.4.13
+pandas
+databricks-sdk
+langchain==0.0.347
+python-decouple
+python-dotenv
+databricks-genai-inference
+rank_bm25
+mlflow-skinny
+simsimd
+langchain-community
+databricks-vectorsearch
