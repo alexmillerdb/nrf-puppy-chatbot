@@ -11,15 +11,16 @@ import pandas as pd
 
 # COMMAND ----------
 
-catalog = "petsmart_chatbot"
-schema = "datascience"
+dbutils.widgets.text("source_catalog", "petsmart_chatbot")
+dbutils.widgets.text("source_schema", "datascience")
 
-spark.sql(f'USE CATALOG {catalog}')
-spark.sql(f"USE SCHEMA {schema}")
+source_catalog = dbutils.widgets.get("source_catalog")
+source_schema = dbutils.widgets.get("source_schema")
 
 # COMMAND ----------
 
-# MAGIC %md ### Move helper functions to notebook/py file and config file to json/yaml
+spark.sql(f'USE CATALOG {source_catalog}')
+spark.sql(f"USE SCHEMA {source_schema}")
 
 # COMMAND ----------
 
@@ -29,64 +30,23 @@ spark.sql(f"USE SCHEMA {schema}")
 
 # COMMAND ----------
 
-import pandas as pd
-import re
-import html
+from src.data_prep.utils import ChunkData
 
-@F.pandas_udf(StringType())
-def clean_text(text: pd.Series) -> pd.Series:
-    """Remove html tags, replace specific characters, and transform HTML character references in a string"""
-    def remove_html_replace_chars_transform_html_refs(s):
-        if s is None:
-            return s
-        # Remove HTML tags
-        clean_html = re.compile('<.*?>')
-        s = re.sub(clean_html, '', s)
-        # Replace specific characters
-        s = s.replace("®", "")
-        # Transform HTML character references
-        s = html.unescape(s)
-        # Additional logic for cases like 'dog#&39;s' -> 'dog 39s'
-        s = re.sub(r'#&(\d+);', r' \1', s)
-        return s
-
-    return text.apply(remove_html_replace_chars_transform_html_refs)
-
-# COMMAND ----------
-
-from langchain.text_splitter import TokenTextSplitter, RecursiveCharacterTextSplitter
-from transformers import AutoTokenizer
-
+# define tokenizer and chunk size/overlap
 chunk_size = 1000
 chunk_overlap = 150
+tokenizer_name = "hf-internal-testing/llama-tokenizer"
 
-tokenizer = AutoTokenizer.from_pretrained("hf-internal-testing/llama-tokenizer")
-
-def get_chunks(text):
- 
-  text_splitter = RecursiveCharacterTextSplitter.from_huggingface_tokenizer(tokenizer, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-  
-  # split text into chunks
-  return text_splitter.split_text(text.strip())
-
-@F.pandas_udf("array<string>")
-def chunker(docs: pd.Series) -> pd.Series:
-  return docs.apply(get_chunks)
-
-def chunk_data(df, text_column):
-    return (df
-        .withColumn("chunks", chunker(text_column))
-        .withColumn("num_chunks", F.expr("size(chunks)"))
-        .withColumn("chunk", F.expr("explode(chunks)"))
-        .withColumnRenamed("chunk", "text"))
-
-# COMMAND ----------
-
+# dog blogs from source table
 dog_blogs_df = spark.table("dog_blogs") \
   .withColumn("title_article", F.concat(F.lit("Blog Title: "), F.col("title"), F.lit(" Article: "), F.col("article"))) \
   .withColumn("length", F.length("title_article"))
 
-dog_blogs_chunked_inputs = chunk_data(df=dog_blogs_df, text_column="title_article").cache()
+# Create an instance of ChunkData
+chunker = ChunkData(tokenizer_name=tokenizer_name, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+
+# Chunk data based on inputs
+dog_blogs_chunked_inputs = chunker.chunk_dataframe(dog_blogs_df, 'title_article')
 display(dog_blogs_chunked_inputs)
 
 # COMMAND ----------
@@ -142,16 +102,22 @@ print(all_splits[1])
 
 # COMMAND ----------
 
-# MAGIC %md ### Write chunked data to UC table
+# MAGIC %md ### Write chunked data to UC table:
+# MAGIC - To do: add more advanced logic when writing data (upsert, merge, etc.)
 
 # COMMAND ----------
 
-catalog = "main"
-schema = "databricks_petm_chatbot"
+dbutils.widgets.text("dst_catalog", "main")
+dbutils.widgets.text("dst_schema", "databricks_petm_chatbot")
 
-spark.sql(f'USE CATALOG {catalog}')
-spark.sql(f'CREATE SCHEMA IF NOT EXISTS {schema}')
-spark.sql(f"USE SCHEMA {schema}")
+dst_catalog = dbutils.widgets.get("dst_catalog")
+dst_schema = dbutils.widgets.get("dst_schema")
+
+# COMMAND ----------
+
+spark.sql(f'USE CATALOG {dst_catalog}')
+spark.sql(f'CREATE SCHEMA IF NOT EXISTS {dst_schema}')
+spark.sql(f"USE SCHEMA {dst_schema}")
 
 # COMMAND ----------
 
@@ -167,51 +133,21 @@ dog_blogs_chunked_inputs.write.format("delta").mode("overwrite").saveAsTable("do
 
 # COMMAND ----------
 
-@F.pandas_udf("array<float>")
-def get_embedding(contents: pd.Series) -> pd.Series:
-    import mlflow.deployments
-    deploy_client = mlflow.deployments.get_deploy_client("databricks")
-    def get_embeddings(batch):
-        #Note: this will fail if an exception is thrown during embedding creation (add try/except if needed) 
-        response = deploy_client.predict(endpoint="databricks-bge-large-en", inputs={"input": batch})
-        return [e['embedding'] for e in response.data]
+from src.data_prep.utils import EmbeddingModel
 
-    # Splitting the contents into batches of 150 items each, since the embedding model takes at most 150 inputs per request.
-    max_batch_size = 150
-    batches = [contents.iloc[i:i + max_batch_size] for i in range(0, len(contents), max_batch_size)]
-
-    # Process each batch and collect the results
-    all_embeddings = []
-    for batch in batches:
-        all_embeddings += get_embeddings(batch.tolist())
-
-    return pd.Series(all_embeddings)
-
-# COMMAND ----------
-
-dog_blogs_embedded = spark.table("dog_blogs_chunked") \
-    .withColumn("embeddings", get_embedding("text")) \
+embedding_model = EmbeddingModel(endpoint_name="databricks-bge-large-en")
+df = spark.table("dog_blogs_chunked")
+dog_blogs_embedded = embedding_model.embed_text_data(df, "text") \
     .withColumn("id", F.monotonically_increasing_id()) \
     .cache()
 
-print(dog_blogs_embedded.count())
 display(dog_blogs_embedded)
 
 # COMMAND ----------
 
-def create_cdc_table(table_name, df):
-    from delta import DeltaTable
-    
-    (DeltaTable.createIfNotExists(spark)
-            .tableName(table_name)
-            .addColumns(df.schema)
-            .property("delta.enableChangeDataFeed", "true")
-            .property("delta.columnMapping.mode", "name")
-            .execute())
+from src.data_prep.utils import create_cdc_table
 
-# COMMAND ----------
-
-create_cdc_table(table_name="dog_blog_data_embedded", df=dog_blogs_embedded)
+create_cdc_table(table_name="dog_blog_data_embedded", df=dog_blogs_embedded, spark=spark)
 dog_blogs_embedded.write.mode("overwrite").saveAsTable("dog_blog_data_embedded")
 
 # COMMAND ----------
