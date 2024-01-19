@@ -1,0 +1,9 @@
+{
+    "vector_search_config": {
+        "VECTOR_SEARCH_ENDPOINT_NAME": "petm_genai_chatbot",
+        "catalog": "main",
+        "db": "databricks_petm_chatbot",
+        "schema": "databricks_petm_chatbot",
+        "source_table": "petm_data_embedded"
+    }
+}

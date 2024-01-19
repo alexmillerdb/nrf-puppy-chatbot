@@ -4,15 +4,30 @@
 
 # COMMAND ----------
 
-# MAGIC %md ### Move to Config
+# MAGIC %md ### Define target/environment and import config file
 
 # COMMAND ----------
 
-VECTOR_SEARCH_ENDPOINT_NAME = "petm_genai_chatbot"
-catalog = "main"
-db = schema = "databricks_petm_chatbot"
-source_tables = ["web_style_data_embedded", "dog_blog_data_embedded", "faq_data_embedded"]
-source_table = "petm_data_embedded"
+dbutils.widgets.dropdown("target", "dev", ["dev", "staging", "prod"])
+target = dbutils.widgets.get("target")
+
+# COMMAND ----------
+
+import json
+
+with open(f"../configs/{target}_config.json", 'r') as cfg:
+    config = json.load(cfg)
+
+vs_config = config["vector_search_config"]
+VECTOR_SEARCH_ENDPOINT_NAME = vs_config["VECTOR_SEARCH_ENDPOINT_NAME"]
+catalog = vs_config["catalog"]
+db = schema = vs_config["db"]
+source_table = vs_config["source_table"]
+
+print(f"Vector search endpoint name: {VECTOR_SEARCH_ENDPOINT_NAME}")
+print(f"Catalog: {catalog}")
+print(f"DB/Schema: {db}")
+print(f"Source Table: {source_table}")
 
 # COMMAND ----------
 
@@ -61,73 +76,10 @@ display(final_df)
 
 # COMMAND ----------
 
-def create_cdc_table(table_name, df):
-    from delta import DeltaTable
-    
-    (DeltaTable.createIfNotExists(spark)
-            .tableName(table_name)
-            .addColumns(df.schema)
-            .property("delta.enableChangeDataFeed", "true")
-            .property("delta.columnMapping.mode", "name")
-            .execute())
+from src.data_prep.utils import create_cdc_table
 
-# COMMAND ----------
-
-create_cdc_table(table_name="petm_data_embedded", df=final_df)
+create_cdc_table(table_name="petm_data_embedded", df=final_df, spark=spark)
 final_df.write.mode("overwrite").saveAsTable("petm_data_embedded")
-
-# COMMAND ----------
-
-# MAGIC %md ### Move to functions notebook
-
-# COMMAND ----------
-
-import time
-def wait_for_vs_endpoint_to_be_ready(vsc, vs_endpoint_name):
-  for i in range(180):
-    endpoint = vsc.get_endpoint(vs_endpoint_name)
-    status = endpoint.get("endpoint_status", endpoint.get("status"))["state"].upper()
-    if "ONLINE" in status:
-      return endpoint
-    elif "PROVISIONING" in status or i <6:
-      if i % 20 == 0: 
-        print(f"Waiting for endpoint to be ready, this can take a few min... {endpoint}")
-      time.sleep(10)
-    else:
-      raise Exception(f'''Error with the endpoint {vs_endpoint_name}. - this shouldn't happen: {endpoint}.\n Please delete it and re-run the previous cell: vsc.delete_endpoint("{vs_endpoint_name}")''')
-  raise Exception(f"Timeout, your endpoint isn't ready yet: {vsc.get_endpoint(vs_endpoint_name)}")
-
-def index_exists(vsc, endpoint_name, index_full_name):
-    indexes = vsc.list_indexes(endpoint_name).get("vector_indexes", list())
-    if any(index_full_name == index.get("name") for index in indexes):
-      return True
-    #Temp fix when index is not available in the list
-    try:
-        dict_vsindex = vsc.get_index(endpoint_name, index_full_name).describe()
-        return dict_vsindex.get('status').get('ready')
-    except Exception as e:
-        if 'RESOURCE_DOES_NOT_EXIST' not in str(e):
-            print(f'Unexpected error describing the index. This could be a permission issue.')
-            raise e
-    return False
-    
-def wait_for_index_to_be_ready(vsc, vs_endpoint_name, index_name):
-  for i in range(180):
-    idx = vsc.get_index(vs_endpoint_name, index_name).describe()
-    index_status = idx.get('status', idx.get('index_status', {}))
-    status = index_status.get('detailed_state', index_status.get('status', 'UNKNOWN')).upper()
-    url = index_status.get('index_url', index_status.get('url', 'UNKNOWN'))
-    if "ONLINE" in status:
-      return
-    if "UNKNOWN" in status:
-      print(f"Can't get the status - will assume index is ready {idx} - url: {url}")
-      return
-    elif "PROVISIONING" in status:
-      if i % 40 == 0: print(f"Waiting for index to be ready, this can take a few min... {index_status} - pipeline url:{url}")
-      time.sleep(10)
-    else:
-        raise Exception(f'''Error with the index - this shouldn't happen. DLT pipeline might have been killed.\n Please delete it and re-run the previous cell: vsc.delete_index("{index_name}, {vs_endpoint_name}") \nIndex details: {idx}''')
-  raise Exception(f"Timeout, your index isn't ready yet: {vsc.get_index(index_name, vs_endpoint_name)}")
 
 # COMMAND ----------
 
@@ -136,17 +88,20 @@ def wait_for_index_to_be_ready(vsc, vs_endpoint_name, index_name):
 # COMMAND ----------
 
 from databricks.vector_search.client import VectorSearchClient
+from src.vector_search.utils import VectorSearchUtility
+
 vsc = VectorSearchClient()
 
 if VECTOR_SEARCH_ENDPOINT_NAME not in [e['name'] for e in vsc.list_endpoints().get('endpoints', [])]:
     vsc.create_endpoint(name=VECTOR_SEARCH_ENDPOINT_NAME, endpoint_type="STANDARD")
 
-wait_for_vs_endpoint_to_be_ready(vsc, VECTOR_SEARCH_ENDPOINT_NAME)
+VectorSearchUtility.wait_for_vs_endpoint_to_be_ready(vsc, VECTOR_SEARCH_ENDPOINT_NAME)
 print(f"Endpoint named {VECTOR_SEARCH_ENDPOINT_NAME} is ready.")
 
 # COMMAND ----------
 
-# MAGIC %md ### Create Vector Search Index
+# MAGIC %md ### Create Vector Search Index:
+# MAGIC - `pipeline_type` can be "TRIGGERED" or "CONTINUOUS" 
 
 # COMMAND ----------
 
@@ -159,7 +114,7 @@ source_table_fullname = f"{catalog}.{db}.{source_table}"
 # Where we want to store our index
 vs_index_fullname = f"{catalog}.{db}.{source_table}_index"
 
-if not index_exists(vsc, VECTOR_SEARCH_ENDPOINT_NAME, vs_index_fullname):
+if not VectorSearchUtility.index_exists(vsc, VECTOR_SEARCH_ENDPOINT_NAME, vs_index_fullname):
   print(f"Creating index {vs_index_fullname} on endpoint {VECTOR_SEARCH_ENDPOINT_NAME}...")
   vsc.create_delta_sync_index(
     endpoint_name=VECTOR_SEARCH_ENDPOINT_NAME,
@@ -172,7 +127,7 @@ if not index_exists(vsc, VECTOR_SEARCH_ENDPOINT_NAME, vs_index_fullname):
   )
 
 #Let's wait for the index to be ready and all our embeddings to be created and indexed
-wait_for_index_to_be_ready(vsc, VECTOR_SEARCH_ENDPOINT_NAME, vs_index_fullname)
+VectorSearchUtility.wait_for_index_to_be_ready(vsc, VECTOR_SEARCH_ENDPOINT_NAME, vs_index_fullname)
 print(f"index {vs_index_fullname} on table {source_table_fullname} is ready")
 
 # COMMAND ----------
