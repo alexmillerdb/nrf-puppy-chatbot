@@ -11,15 +11,16 @@ import pandas as pd
 
 # COMMAND ----------
 
-catalog = "petsmart_chatbot"
-schema = "datascience"
+dbutils.widgets.text("source_catalog", "petsmart_chatbot")
+dbutils.widgets.text("source_schema", "datascience")
 
-spark.sql(f'USE CATALOG {catalog}')
-spark.sql(f"USE SCHEMA {schema}")
+source_catalog = dbutils.widgets.get("source_catalog")
+source_schema = dbutils.widgets.get("source_schema")
 
 # COMMAND ----------
 
-# MAGIC %md ### Move helper functions to notebook/py file and config file to json/yaml
+spark.sql(f'USE CATALOG {source_catalog}')
+spark.sql(f"USE SCHEMA {source_schema}")
 
 # COMMAND ----------
 
@@ -29,39 +30,22 @@ spark.sql(f"USE SCHEMA {schema}")
 
 # COMMAND ----------
 
-from langchain.text_splitter import TokenTextSplitter, RecursiveCharacterTextSplitter
-from transformers import AutoTokenizer
+from src.data_prep.utils import ChunkData
 
+# define tokenizer and chunk size/overlap
 chunk_size = 1000
 chunk_overlap = 150
+tokenizer_name = "hf-internal-testing/llama-tokenizer"
 
-tokenizer = AutoTokenizer.from_pretrained("hf-internal-testing/llama-tokenizer")
+# Create an instance of ChunkData
+chunker = ChunkData(tokenizer_name=tokenizer_name, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
-def get_chunks(text):
- 
-  text_splitter = RecursiveCharacterTextSplitter.from_huggingface_tokenizer(tokenizer, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-  
-  # split text into chunks
-  return text_splitter.split_text(text.strip())
-
-@F.pandas_udf("array<string>")
-def chunker(docs: pd.Series) -> pd.Series:
-  return docs.apply(get_chunks)
-
-def chunk_data(df, text_column):
-    return (df
-        .withColumn("chunks", chunker(text_column))
-        .withColumn("num_chunks", F.expr("size(chunks)"))
-        .withColumn("chunk", F.expr("explode(chunks)"))
-        .withColumnRenamed("chunk", "text"))
-
-# COMMAND ----------
-
+# chunk faqs data
 faqs_df = spark.table("petm_faqs") \
   .withColumn("faq_context", F.concat(F.lit("Question: "), F.col("question"), F.lit(" Answer: "), F.col("answer"), F.lit(" context: "), F.col("context"))) \
   .withColumn("length", F.length("faq_context"))
 
-faqs_df_chunked_inputs = chunk_data(df=faqs_df, text_column="faq_context").cache()
+faqs_df_chunked_inputs = chunker.chunk_dataframe(faqs_df, "faq_context").cache()
 display(faqs_df_chunked_inputs)
 
 # COMMAND ----------
@@ -121,12 +105,17 @@ print(all_splits[1])
 
 # COMMAND ----------
 
-catalog = "main"
-schema = "databricks_petm_chatbot"
+dbutils.widgets.text("dst_catalog", "main")
+dbutils.widgets.text("dst_schema", "databricks_petm_chatbot")
 
-spark.sql(f'USE CATALOG {catalog}')
-spark.sql(f'CREATE SCHEMA IF NOT EXISTS {schema}')
-spark.sql(f"USE SCHEMA {schema}")
+dst_catalog = dbutils.widgets.get("dst_catalog")
+dst_schema = dbutils.widgets.get("dst_schema")
+
+# COMMAND ----------
+
+spark.sql(f'USE CATALOG {dst_catalog}')
+spark.sql(f'CREATE SCHEMA IF NOT EXISTS {dst_schema}')
+spark.sql(f"USE SCHEMA {dst_schema}")
 
 # COMMAND ----------
 
@@ -142,51 +131,21 @@ faqs_df_chunked_inputs.write.format("delta").mode("overwrite").saveAsTable("faqs
 
 # COMMAND ----------
 
-@F.pandas_udf("array<float>")
-def get_embedding(contents: pd.Series) -> pd.Series:
-    import mlflow.deployments
-    deploy_client = mlflow.deployments.get_deploy_client("databricks")
-    def get_embeddings(batch):
-        #Note: this will fail if an exception is thrown during embedding creation (add try/except if needed) 
-        response = deploy_client.predict(endpoint="databricks-bge-large-en", inputs={"input": batch})
-        return [e['embedding'] for e in response.data]
+from src.data_prep.utils import EmbeddingModel
 
-    # Splitting the contents into batches of 150 items each, since the embedding model takes at most 150 inputs per request.
-    max_batch_size = 150
-    batches = [contents.iloc[i:i + max_batch_size] for i in range(0, len(contents), max_batch_size)]
-
-    # Process each batch and collect the results
-    all_embeddings = []
-    for batch in batches:
-        all_embeddings += get_embeddings(batch.tolist())
-
-    return pd.Series(all_embeddings)
-
-# COMMAND ----------
-
-faqs_embedded = spark.table("faqs_chunked") \
-    .withColumn("embeddings", get_embedding("text")) \
+embedding_model = EmbeddingModel(endpoint_name="databricks-bge-large-en")
+df = spark.table("faqs_chunked")
+faqs_embedded = embedding_model.embed_text_data(df, "text") \
     .withColumn("id", F.monotonically_increasing_id()) \
     .cache()
 
-print(faqs_embedded.count())
 display(faqs_embedded)
 
 # COMMAND ----------
 
-def create_cdc_table(table_name, df):
-    from delta import DeltaTable
-    
-    (DeltaTable.createIfNotExists(spark)
-            .tableName(table_name)
-            .addColumns(df.schema)
-            .property("delta.enableChangeDataFeed", "true")
-            .property("delta.columnMapping.mode", "name")
-            .execute())
+from src.data_prep.utils import create_cdc_table
 
-# COMMAND ----------
-
-create_cdc_table(table_name="faq_data_embedded", df=faqs_embedded)
+create_cdc_table(table_name="faq_data_embedded", df=faqs_embedded, spark=spark)
 faqs_embedded.write.mode("overwrite").saveAsTable("faq_data_embedded")
 
 # COMMAND ----------
