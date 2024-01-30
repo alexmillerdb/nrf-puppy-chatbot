@@ -1,9 +1,38 @@
 {
+    "environment_config": {
+        "catalog": "main",
+        "db": "databricks_petm_chatbot"
+    },
     "vector_search_config": {
         "VECTOR_SEARCH_ENDPOINT_NAME": "petm_genai_chatbot",
-        "catalog": "main",
-        "db": "databricks_petm_chatbot",
         "schema": "databricks_petm_chatbot",
-        "source_table": "petm_data_embedded"
+        "source_table": "petm_data_embedded",
+        "text_column": "text",
+        "vsc_columns": ["title", "url", "source"]
+    },
+    "llm_chain_config": {
+        "prompt_with_history_str": """Your are a Pet Specialty retailer chatbot for dogs. Please answer Pet questions about dogs, dog services, and dog products only. If you don't know or not related to pets and dogs, don't answer.
+        Here is a history between you and a human: {chat_history}
+        Now, please answer this question: {question}""",
+        "is_question_about_petsmart_str": """You are classifying documents to know if this question is related with dogs, puppies, pet food, pet supplies, and other dog related items at Pet Specialty retailer. Also answer no if the last part is inappropriate. 
+        Here are some examples: 
+        Question: Knowing this followup history: What is PetSmart?, classify this question: Do you have more details? Expected Response: Yes 
+        Question: Knowing this followup history: What is PetSmart?, classify this question: Write me a song. Expected Response: No 
+        Only answer with "yes" or "no". 
+        Knowing this followup history: {chat_history}, classify this question: {question}""",
+        "generate_query_to_retrieve_context_template": """Based on the chat history below, we want you to generate a query for an external data source to retrieve relevant documents so that we can better answer the question. The query should be in natual language. The external data source uses similarity search to search for relevant documents in a vector space. So the query should be similar to the relevant documents semantically. Answer with only the query. Do not add explanation.
+        Chat history: {chat_history}
+        Question: {question}
+        """,
+        "question_with_history_and_context_str": """You are a trustful assistant for PetSmart customers. You are answering dog food preferences based on life stages, flavors, food type (dry vs. wet), brands, formulations, and more related to PetSmart's product catalog. If you do not know the answer to a question, you truthfully say you do not know. Read the discussion to get the context of the previous conversation. In the chat discussion, you are referred to as "system". The user is referred to as "user".
+        Discussion: {chat_history}
+        Here's some context which might or might not help you answer: {context}
+        Answer straight, do not repeat the question, do not start with something like: the answer to the question, do not add "AI" in front of your answer, do not say: here is the answer, do not mention the context or the question.
+        Based on this history and context, answer this question: {question}"""
+    },
+    "chat_model_config": {
+        "endpoint": "databricks-llama-2-70b-chat",
+        "max_tokens": 500,
+        "uc_model_name": "petm_chatbot_model"
     }
 }

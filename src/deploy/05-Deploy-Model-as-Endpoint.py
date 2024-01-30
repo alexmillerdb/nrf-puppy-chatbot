@@ -150,8 +150,8 @@ from databricks.sdk.service.serving import EndpointCoreConfigInput, ServedModelI
 mlflow.set_registry_uri('databricks-uc')
 client = MlflowClient()
 model_name = f"{catalog}.{db}.petm_chatbot_model"
-serving_endpoint_name = f"petm_chatbot_endpoint_{catalog}_{db}"[:63]
-# serving_endpoint_name = f"nrf_puppy_chatbot_test"
+# serving_endpoint_name = f"petm_chatbot_endpoint_{catalog}_{db}"[:63]
+serving_endpoint_name = f"nrf_puppy_chatbot_test"
 latest_model = client.get_model_version_by_alias(model_name, "prod")
 
 w = WorkspaceClient()
