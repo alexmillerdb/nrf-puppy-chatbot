@@ -1,5 +1,5 @@
 # Databricks notebook source
-# MAGIC %pip install databricks-sdk==0.12.0 databricks-genai-inference==0.1.1 mlflow==2.9.0 textstat==0.7.3 tiktoken==0.5.1 evaluate==0.4.1 langchain==0.0.344 databricks-vectorsearch==0.22 transformers==4.30.2 torch==2.0.1 cloudpickle==2.2.1 pydantic==2.5.2
+# MAGIC %pip install databricks-sdk==0.12.0 databricks-genai-inference==0.1.1 mlflow==2.9.0 textstat==0.7.3 tiktoken==0.5.1 evaluate==0.4.1 langchain==0.0.344 databricks-vectorsearch==0.22 transformers==4.34.0 torch==2.0.1 cloudpickle==2.2.1 pydantic==2.5.2
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
@@ -50,6 +50,35 @@ answer_test['choices'][0]['message']['content']
 
 # COMMAND ----------
 
+dbutils.widgets.dropdown("target", "dev", ["dev", "staging", "prod"])
+target = dbutils.widgets.get("target")
+
+# COMMAND ----------
+
+import yaml
+import json
+
+# Step 1: Load the YAML file
+with open(f"../configs/{target}_config.yaml", 'r') as yaml_file:
+    config = yaml.safe_load(yaml_file)
+
+assert (type(config) == dict), print("Config is not in dict format")
+
+# COMMAND ----------
+
+# environment config
+env_config = config["environment_config"]
+catalog = env_config["catalog"]
+db = schema = env_config["db"]
+
+# chat model config
+chat_model_config = config["chat_model_config"]
+chat_model_endpoint = chat_model_config["endpoint"]
+chat_model_tokens = chat_model_config["max_tokens"]
+uc_model_name = chat_model_config["uc_model_name"]
+
+# COMMAND ----------
+
 # MAGIC %md 
 # MAGIC ## Offline LLM evaluation
 # MAGIC
@@ -78,22 +107,37 @@ def get_latest_model_version(model_name):
 from pyspark.sql import functions as F
 import os 
 
-catalog = "main"
-db = "databricks_petm_chatbot"
+mlflow.set_registry_uri("databricks-uc")
+
+model_name = f"{catalog}.{db}.{uc_model_name}_pyfunc"
 
 os.environ['DATABRICKS_TOKEN'] = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
-model_name = f"{catalog}.{db}.petm_chatbot_model"
+os.environ['DATABRICKS_HOST'] = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
+
+model_name = f"{catalog}.{db}.petm_chatbot_model_pyfunc"
 model_version_to_evaluate = get_latest_model_version(model_name)
 print(f"Model version to evaluate: {model_version_to_evaluate}")
-mlflow.set_registry_uri("databricks-uc")
-rag_model = mlflow.langchain.load_model(f"models:/{model_name}/{model_version_to_evaluate}")
+rag_model = mlflow.pyfunc.load_model(f"models:/{model_name}/{model_version_to_evaluate}")
 
 @F.pandas_udf("string")
 def predict_answer(questions):
     def answer_question(question):
-        dialog = {"messages": [{"role": "user", "content": question}]}
-        return rag_model.invoke(dialog)['result']
+        dialog = {"messages": [{"messages": [{"role": "user", "content": question}]}]}
+        return rag_model.predict(dialog)['result']
     return questions.apply(answer_question)
+
+# COMMAND ----------
+
+chat_hist = {
+    "messages": 
+        [
+            {"role": "user", "content": "What are the best food options for a puppy German Shepherd with sensitive skin?"},
+            {"role": "assistant", "content": "  Based on the information provided, the best food options for a puppy German Shepherd with sensitive skin are Royal Canin Breed Health Nutrition German Shepherd Puppy Dry Dog Food and Hill's Prescription Diet Derm Complete Puppy Environmental/Food Sensitivities Dry Dog Food. Both foods are specifically formulated to support the skin's barriers against environmental irritants and provide nutritional support for building skin health. Additionally, they both contain ingredients that are easy to digest and are designed to promote healthy digestion. It's important to consult with a veterinarian to determine the best food option for your puppy's specific needs."},
+            {"role": "user", "content": "How can I transition my adult dog from a puppy food to an adult food?"}
+            ]
+}
+# rag_model.predict({"messages:" [chat_hist]})
+rag_model.predict({"messages": [chat_hist]})
 
 # COMMAND ----------
 
@@ -112,17 +156,6 @@ df_qa_with_preds = df_qa.withColumn('preds', predict_answer(F.col('inputs'))).ca
 
 print(df_qa_with_preds.count())
 display(df_qa_with_preds)
-
-# COMMAND ----------
-
-# df_qa = (spark.read.table('evaluation_dataset')
-#                   .selectExpr('question as inputs', 'answer as targets')
-#                   .where("targets is not null")
-#                   .sample(fraction=0.005, seed=40)) #small sample for interactive demo
-
-# df_qa_with_preds = df_qa.withColumn('preds', predict_answer(col('inputs'))).cache()
-
-# display(df_qa_with_preds)
 
 # COMMAND ----------
 
@@ -236,10 +269,6 @@ px.bar(df_genai_metrics['answer_correctness/v1/score'].value_counts(), title='An
 df_genai_metrics['toxicity'] = df_genai_metrics['toxicity/v1/score'] * 100
 fig = px.scatter(df_genai_metrics, x='toxicity', y='answer_correctness/v1/score', title='Toxicity vs Correctness', size=[10]*len(df_genai_metrics))
 fig.update_xaxes(tickformat=".2f")
-
-# COMMAND ----------
-
-df_genai_metrics[df_genai_metrics['answer_correctness/v1/score'] == 3]
 
 # COMMAND ----------
 

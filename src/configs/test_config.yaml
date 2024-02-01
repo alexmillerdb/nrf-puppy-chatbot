@@ -3,7 +3,8 @@ environment_config:
   db: databricks_petm_chatbot
 
 vector_search_config:
-  VECTOR_SEARCH_ENDPOINT_NAME: petm_genai_chatbot
+  vector_search_endpoint_name: petm_genai_chatbot
+  vector_search_index: petm_data_embedded_index
   schema: databricks_petm_chatbot
   source_table: petm_data_embedded
   text_column: text
@@ -38,7 +39,7 @@ llm_chain_config:
     Based on this history and context, answer this question: {question}
 
 chat_model_config:
-  endpoint: databricks-llama-2-70b-chat
+  chat_model_endpoint: databricks-llama-2-70b-chat
   max_tokens: 500
-  uc_model_name: petm_chatbot_model
+  uc_model_name: petm_chatbot_model_pyfunc
   tokenizer_model: hf-internal-testing/llama-tokenizer

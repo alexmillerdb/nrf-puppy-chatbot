@@ -9,132 +9,48 @@
 
 # COMMAND ----------
 
-VECTOR_SEARCH_ENDPOINT_NAME = "petm_genai_chatbot"
-catalog = "main"
-db = "databricks_petm_chatbot"
-source_table = "petm_data_embedded"
+dbutils.widgets.dropdown("target", "dev", ["dev", "staging", "prod"])
+target = dbutils.widgets.get("target")
+
+# COMMAND ----------
+
+import yaml
+import json
+
+# Step 1: Load the YAML file
+with open(f"../configs/{target}_config.yaml", 'r') as yaml_file:
+    config = yaml.safe_load(yaml_file)
+
+assert (type(config) == dict), print("Config is not in dict format")
+
+# COMMAND ----------
+
+# environment config
+env_config = config["environment_config"]
+vs_config = config["vector_search_config"]
+catalog = env_config["catalog"]
+db = schema = env_config["db"]
+
+# chat model config
+chat_model_config = config["chat_model_config"]
+chat_model_endpoint = chat_model_config["endpoint"]
+chat_model_tokens = chat_model_config["max_tokens"]
+uc_model_name = chat_model_config["uc_model_name"]
+VECTOR_SEARCH_ENDPOINT_NAME = vs_config["VECTOR_SEARCH_ENDPOINT_NAME"]
+source_table = vs_config["source_table"]
+
+# COMMAND ----------
+
+# VECTOR_SEARCH_ENDPOINT_NAME = "petm_genai_chatbot"
+# catalog = "main"
+# db = "databricks_petm_chatbot"
+# source_table = "petm_data_embedded"
 secret_scope_name = "NRF_PUPPY_CHATBOT"
 secret_key_name = "PAT"
 
 # COMMAND ----------
 
-# MAGIC %md ## ADD TO HELPER FUNCTIONS
-
-# COMMAND ----------
-
-import os
-import requests
-import time
-
-class EndpointApiClient:
-    def __init__(self):
-        self.base_url =dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
-        self.token = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
-        self.headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
-
-    def create_inference_endpoint(self, endpoint_name, served_models, auto_capture_config = None):
-        data = {"name": endpoint_name, "config": {"served_models": served_models, "auto_capture_config": auto_capture_config}}
-        return self._post("api/2.0/serving-endpoints", data)
-
-    def get_inference_endpoint(self, endpoint_name):
-        return self._get(f"api/2.0/serving-endpoints/{endpoint_name}", allow_error=True)
-      
-      
-    def inference_endpoint_exists(self, endpoint_name):
-      ep = self.get_inference_endpoint(endpoint_name)
-      if 'error_code' in ep and ep['error_code'] == 'RESOURCE_DOES_NOT_EXIST':
-          return False
-      if 'error_code' in ep and ep['error_code'] != 'RESOURCE_DOES_NOT_EXIST':
-          raise Exception(f"enpoint exists ? {ep}")
-      return True
-
-    def create_endpoint_if_not_exists(self, endpoint_name, model_name, model_version, workload_size, scale_to_zero_enabled=True, wait_start=True, auto_capture_config = None, environment_vars = {}):
-      models = [{
-            "model_name": model_name,
-            "model_version": model_version,
-            "workload_size": workload_size,
-            "scale_to_zero_enabled": scale_to_zero_enabled,
-            "environment_vars": environment_vars
-      }]
-      if not self.inference_endpoint_exists(endpoint_name):
-        r = self.create_inference_endpoint(endpoint_name, models, auto_capture_config)
-      #Make sure we have the proper version deployed
-      else:
-        ep = self.get_inference_endpoint(endpoint_name)
-        if 'pending_config' in ep:
-            self.wait_endpoint_start(endpoint_name)
-            ep = self.get_inference_endpoint(endpoint_name)
-        if 'pending_config' in ep:
-            model_deployed = ep['pending_config']['served_models'][0]
-            print(f"Error with the model deployed: {model_deployed} - state {ep['state']}")
-        else:
-            model_deployed = ep['config']['served_models'][0]
-        if model_deployed['model_version'] != model_version:
-          print(f"Current model is version {model_deployed['model_version']}. Updating to {model_version}...")
-          u = self.update_model_endpoint(endpoint_name, {"served_models": models})
-      if wait_start:
-        self.wait_endpoint_start(endpoint_name)
-      
-      
-    def list_inference_endpoints(self):
-        return self._get("api/2.0/serving-endpoints")
-
-    def update_model_endpoint(self, endpoint_name, conf):
-        return self._put(f"api/2.0/serving-endpoints/{endpoint_name}/config", conf)
-
-    def delete_inference_endpoint(self, endpoint_name):
-        return self._delete(f"api/2.0/serving-endpoints/{endpoint_name}")
-
-    def wait_endpoint_start(self, endpoint_name):
-      i = 0
-      while self.get_inference_endpoint(endpoint_name)['state']['config_update'] == "IN_PROGRESS" and i < 500:
-        if i % 10 == 0:
-          print("waiting for endpoint to build model image and start...")
-        time.sleep(10)
-        i += 1
-      ep = self.get_inference_endpoint(endpoint_name)
-      if ep['state'].get("ready", None) != "READY":
-        print(f"Error creating the endpoint: {ep}")
-        
-      
-    # Making predictions
-
-    def query_inference_endpoint(self, endpoint_name, data):
-        return self._post(f"realtime-inference/{endpoint_name}/invocations", data)
-
-    # Debugging
-
-    def get_served_model_build_logs(self, endpoint_name, served_model_name):
-        return self._get(
-            f"api/2.0/serving-endpoints/{endpoint_name}/served-models/{served_model_name}/build-logs"
-        )
-
-    def get_served_model_server_logs(self, endpoint_name, served_model_name):
-        return self._get(
-            f"api/2.0/serving-endpoints/{endpoint_name}/served-models/{served_model_name}/logs"
-        )
-
-    def get_inference_endpoint_events(self, endpoint_name):
-        return self._get(f"api/2.0/serving-endpoints/{endpoint_name}/events")
-
-    def _get(self, uri, data = {}, allow_error = False):
-        r = requests.get(f"{self.base_url}/{uri}", params=data, headers=self.headers)
-        return self._process(r, allow_error)
-
-    def _post(self, uri, data = {}, allow_error = False):
-        return self._process(requests.post(f"{self.base_url}/{uri}", json=data, headers=self.headers), allow_error)
-
-    def _put(self, uri, data = {}, allow_error = False):
-        return self._process(requests.put(f"{self.base_url}/{uri}", json=data, headers=self.headers), allow_error)
-
-    def _delete(self, uri, data = {}, allow_error = False):
-        return self._process(requests.delete(f"{self.base_url}/{uri}", json=data, headers=self.headers), allow_error)
-
-    def _process(self, r, allow_error = False):
-      if r.status_code == 500 or r.status_code == 403 or not allow_error:
-        print(r.text)
-        r.raise_for_status()
-      return r.json()
+# MAGIC %md ### Add Model name and serving endpoint name to config
 
 # COMMAND ----------
 
@@ -147,16 +63,21 @@ from mlflow import MlflowClient
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.serving import EndpointCoreConfigInput, ServedModelInput
 
+from src.utils.model_serving import EndpointApiClient
+
 mlflow.set_registry_uri('databricks-uc')
 client = MlflowClient()
-model_name = f"{catalog}.{db}.petm_chatbot_model"
+model_name = f"{catalog}.{db}.petm_chatbot_model_pyfunc"
 # serving_endpoint_name = f"petm_chatbot_endpoint_{catalog}_{db}"[:63]
+serving_endpoint_name = f"nrf_puppy_chatbot_test_pyfunc"
 serving_endpoint_name = f"nrf_puppy_chatbot_test"
 latest_model = client.get_model_version_by_alias(model_name, "prod")
 
+base_url = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
+token =  dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
+
 w = WorkspaceClient()
-#TODO: use the sdk once model serving is available.
-serving_client = EndpointApiClient()
+serving_client = EndpointApiClient(base_url=base_url, token=token)
 # Start the endpoint using the REST API (you can do it using the UI directly)
 auto_capture_config = {
     "catalog_name": catalog,
@@ -170,7 +91,8 @@ serving_client.create_endpoint_if_not_exists(serving_endpoint_name,
                                              workload_size="Small", 
                                              scale_to_zero_enabled=True, 
                                              wait_start = True, 
-                                             auto_capture_config=auto_capture_config, environment_vars=environment_vars)
+                                             auto_capture_config=auto_capture_config, 
+                                             environment_vars=environment_vars)
 
 # COMMAND ----------
 

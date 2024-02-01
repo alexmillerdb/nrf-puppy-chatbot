@@ -1,10 +1,15 @@
 # Databricks notebook source
-# MAGIC %pip install mlflow==2.9.0 langchain==0.0.344 databricks-vectorsearch==0.22 cloudpickle==2.2.1 databricks-sdk==0.12.0 cloudpickle==2.2.1 pydantic==2.5.2 transformers==4.34.0
+# MAGIC %pip install mlflow==2.9.0 langchain==0.0.344 databricks-vectorsearch==0.22 cloudpickle==2.2.1 databricks-sdk==0.12.0 cloudpickle==2.2.1 pydantic==2.5.2 transformers==4.34.0 pyyaml
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
 
-# MAGIC %md Helper function
+dbutils.widgets.dropdown("target", "dev", ["dev", "staging", "prod"])
+target = dbutils.widgets.get("target")
+
+# COMMAND ----------
+
+# MAGIC %md Helper functions that are difficult to move to utils.py due to notebook dependencies
 
 # COMMAND ----------
 
@@ -29,6 +34,41 @@ def display_chat(chat_history, response):
 
 # COMMAND ----------
 
+# MAGIC %md ### Define configuration parameters
+
+# COMMAND ----------
+
+import yaml
+import json
+
+# Step 1: Load the YAML file
+with open(f"../configs/{target}_config.yaml", 'r') as yaml_file:
+    config = yaml.safe_load(yaml_file)
+
+assert (type(config) == dict), print("Config is not in dict format")
+
+# COMMAND ----------
+
+# environment config
+env_config = config["environment_config"]
+catalog = env_config["catalog"]
+db = schema = env_config["db"]
+
+# chat model config
+chat_model_config = config["chat_model_config"]
+chat_model_endpoint = chat_model_config["endpoint"]
+chat_model_tokens = chat_model_config["max_tokens"]
+uc_model_name = chat_model_config["uc_model_name"]
+
+# llm chain config
+llm_chain_config = config["llm_chain_config"]
+prompt_with_history_str = llm_chain_config["prompt_with_history_str"]
+is_question_about_petsmart_str = llm_chain_config["is_question_about_petsmart_str"]
+generate_query_to_retrieve_context_template = llm_chain_config["generate_query_to_retrieve_context_template"]
+question_with_history_and_context_str = llm_chain_config["question_with_history_and_context_str"]
+
+# COMMAND ----------
+
 # MAGIC %md ### Simple example of Langchain using ChatDatabricks
 
 # COMMAND ----------
@@ -41,7 +81,7 @@ prompt = PromptTemplate(
   input_variables = ["question"],
   template = "You are an assistant. Give a short answer to this question: {question}"
 )
-chat_model = ChatDatabricks(endpoint="databricks-llama-2-70b-chat", max_tokens = 500)
+chat_model = ChatDatabricks(endpoint=chat_model_endpoint, max_tokens = chat_model_tokens)
 
 chain = (
   prompt
@@ -64,13 +104,11 @@ print(chain.invoke({"question": "What is PetSmart?"}))
 
 # COMMAND ----------
 
-prompt_with_history_str = """
-Your are a Pet Specialty retailer chatbot for dogs. Please answer Pet questions about dogs, dog services, and dog products only. If you don't know or not related to pets and dogs, don't answer.
+from langchain.prompts import PromptTemplate
+from langchain.chat_models import ChatDatabricks
+from langchain.schema.output_parser import StrOutputParser
 
-Here is a history between you and a human: {chat_history}
-
-Now, please answer this question: {question}
-"""
+chat_model = ChatDatabricks(endpoint=chat_model_endpoint, max_tokens = chat_model_tokens)
 
 prompt_with_history = PromptTemplate(
   input_variables = ["chat_history", "question"],
@@ -85,65 +123,14 @@ prompt_with_history = PromptTemplate(
 
 import transformers
 from transformers import AutoTokenizer
+from langchain.schema.runnable import RunnableLambda
+from operator import itemgetter
+from src.utils.llm_chain_utils import ChatPreprocess
+# from src.llm_chain.utils import ChatPreprocess
+# from utils import ChatPreprocess
 
+# load tokenizer
 tokenizer = AutoTokenizer.from_pretrained("hf-internal-testing/llama-tokenizer")
-
-# COMMAND ----------
-
-def convert_to_chat_hist(python_str):
-    # Splitting the string by 'user:' and 'assistant:' while keeping these delimiters
-    parts = []
-    temp = python_str
-    for delimiter in ["user:", "assistant:"]:
-        if temp:
-            split_text = temp.split(delimiter)
-            first = split_text.pop(0)
-            temp = delimiter.join(split_text)
-            if first:
-                parts.append(first)
-            parts.extend([delimiter + s for s in split_text])
-
-    # Removing empty strings if any
-    parts = [part for part in parts if part.strip()]
-
-    # Parsing each part into role and content
-    messages = []
-    for part in parts:
-        if part.startswith("user:"):
-            role = "user"
-        elif part.startswith("assistant:"):
-            role = "assistant"
-        else:
-            continue  # Skip if it doesn't start with a known role
-
-        content = part[len(role) + 1:].strip()  # +1 for the colon after the role
-        messages.append({"role": role, "content": content})
-
-    return {"messages": messages}
-
-# COMMAND ----------
-
-def truncate_chat_history(chat_hist):
-    # Function to tokenize and count tokens
-    def tokenize_and_count(text):
-        tokens = tokenizer.encode(text)
-        return tokens, len(tokens)
-
-    # Extract messages and concatenate them into one string
-    # all_messages = ' '.join([msg['role'] + ": " + msg['content'] for msg in chat_hist['messages']])
-    all_messages = ' '.join([msg['role'] + ": " + msg['content'] for msg in chat_hist])
-    
-    # Tokenize and count tokens in the entire chat
-    tokens, total_count = tokenize_and_count(all_messages)
-    # return total_count
-
-    # If the total token count is more than 750, truncate
-    if total_count > 500:
-        truncated_tokens = tokens[-500:]  # Keep the last 750 tokens
-        truncated_decode = tokenizer.decode(truncated_tokens)
-        return convert_to_chat_hist(truncated_decode)
-    else:
-        return chat_hist
 
 # Example usage
 chat_hist = {
@@ -227,36 +214,14 @@ chat_hist = {
                 ]
 }
 
-truncated_chat = truncate_chat_history(chat_hist['messages'])
-print(truncated_chat)
+# instantiate ChatPreprocess class
+chat_preprocess = ChatPreprocess(tokenizer=tokenizer)
 
-# COMMAND ----------
-
-from langchain.schema.runnable import RunnableLambda
-from operator import itemgetter
-from transformers import AutoTokenizer
-
-# count tokens of history and return max of 500
-tokenizer = AutoTokenizer.from_pretrained("hf-internal-testing/llama-tokenizer")
-def count_tokens(tokenizer, text):
-    return len(tokenizer.encode(text))
-
-#The question is the last entry of the history
-def extract_question(input):
-    return input[-1]["content"]
-
-# #The history is everything before the last question
-# def extract_history(input):
-#     return input[:-1]
-
-def extract_history(input):
-    return truncate_chat_history(input[:-1])
-    
-
+# create chain with history and add extract_question and extract_history methods
 chain_with_history = (
     {
-        "question": itemgetter("messages") | RunnableLambda(extract_question),
-        "chat_history": itemgetter("messages") | RunnableLambda(extract_history),
+        "question": itemgetter("messages") | RunnableLambda(chat_preprocess.extract_question),
+        "chat_history": itemgetter("messages") | RunnableLambda(chat_preprocess.extract_history),
     }
     | prompt_with_history
     | chat_model
@@ -277,28 +242,6 @@ print(chain_with_history.invoke(chat_hist))
 
 # COMMAND ----------
 
-# MAGIC %md Add prompt templates to config file
-
-# COMMAND ----------
-
-# chat_model = ChatDatabricks(endpoint="databricks-llama-2-70b-chat", max_tokens = 200)
-
-is_question_about_petsmart_str = """
-You are classifying documents to know if this question is related with dogs, puppies, pet food, pet supplies, and other dog related items at Pet Specialty retailer. Also answer no if the last part is inappropriate. 
-
-Here are some examples:
-
-Question: Knowing this followup history: What is PetSmart?, classify this question: Do you have more details?
-Expected Response: Yes
-
-Question: Knowing this followup history: What is PetSmart?, classify this question: Write me a song.
-Expected Response: No
-
-Only answer with "yes" or "no". 
-
-Knowing this followup history: {chat_history}, classify this question: {question}
-"""
-
 is_question_about_petsmart_prompt = PromptTemplate(
   input_variables= ["chat_history", "question"],
   template = is_question_about_petsmart_str
@@ -306,31 +249,39 @@ is_question_about_petsmart_prompt = PromptTemplate(
 
 is_about_petsmart_chain = (
     {
-        "question": itemgetter("messages") | RunnableLambda(extract_question),
-        "chat_history": itemgetter("messages") | RunnableLambda(extract_history),
+        "question": itemgetter("messages") | RunnableLambda(chat_preprocess.extract_question),
+        "chat_history": itemgetter("messages") | RunnableLambda(chat_preprocess.extract_history),
     }
     | is_question_about_petsmart_prompt
     | chat_model
     | StrOutputParser()
 )
 
-#Returns "Yes" as this is about PetSmart: 
-print(is_about_petsmart_chain.invoke({
+# COMMAND ----------
+
+# MAGIC %md Unit testing to ensure `is_about_petsmart_chain` is working
+
+# COMMAND ----------
+
+assert (is_about_petsmart_chain.invoke({
     "messages": [
         {"role": "user", "content": "What is PetSmart?"}, 
         {"role": "assistant", "content": "PetSmart is a retail chain that specializes in pet supplies and services, such as food, toys, grooming, and training for dogs, cats, birds, fish, and other small animals."}, 
         {"role": "user", "content": "Does it include any Services like dog grooming?"}
     ]
-}))
+}).strip(" \n") == "Yes"), print(f"Prompt: {is_question_about_petsmart_prompt} is not working correctly")
 
-# COMMAND ----------
-
-#Return "no" as this isn't about Databricks
-print(is_about_petsmart_chain.invoke({
+assert (is_about_petsmart_chain.invoke({
     "messages": [
         {"role": "user", "content": "What is the meaning of life?"}
     ]
-}))
+}).strip(" ") == "No"), print(f"Prompt: {is_question_about_petsmart_prompt} is not working correctly")
+
+assert (is_about_petsmart_chain.invoke({
+    "messages": [
+        {"role": "user", "content": "Is the sky blue?"}
+    ]
+}).strip(" ") == "No"), print(f"Prompt: {is_question_about_petsmart_prompt} is not working correctly")
 
 # COMMAND ----------
 
@@ -343,169 +294,12 @@ print(is_about_petsmart_chain.invoke({
 
 # COMMAND ----------
 
-def test_demo_permissions(host, secret_scope, secret_key, vs_endpoint_name, index_name, embedding_endpoint_name = None):
-  error = False
-  CSS_REPORT = """
-  <style>
-  .dbdemos_install{
-                      font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica Neue,Arial,Noto Sans,sans-serif,Apple Color Emoji,Segoe UI Emoji,Segoe UI Symbol,Noto Color Emoji,FontAwesome;
-  color: #3b3b3b;
-  box-shadow: 0 .15rem 1.15rem 0 rgba(58,59,69,.15)!important;
-  padding: 10px 20px 20px 20px;
-  margin: 10px;
-  font-size: 14px !important;
-  }
-  .dbdemos_block{
-      display: block !important;
-      width: 900px;
-  }
-  .code {
-      padding: 5px;
-      border: 1px solid #e4e4e4;
-      font-family: monospace;
-      background-color: #f5f5f5;
-      margin: 5px 0px 0px 0px;
-      display: inline;
-  }
-  </style>"""
-
-  def display_error(title, error, color=""):
-    displayHTML(f"""{CSS_REPORT}
-      <div class="dbdemos_install">
-                          <h1 style="color: #eb0707">Configuration error: {title}</h1> 
-                            {error}
-                        </div>""")
-  
-  def get_email():
-    try:
-      return spark.sql('select current_user() as user').collect()[0]['user']
-    except:
-      return 'Uknown'
-
-  def get_token_error(msg, e):
-    return f"""
-    {msg}<br/><br/>
-    Your model will be served using Databrick Serverless endpoint and needs a Pat Token to authenticate.<br/>
-    <strong> This must be saved as a secret to be accessible when the model is deployed.</strong><br/><br/>
-    Here is how you can add the Pat Token as a secret available within your notebook and for the model:
-    <ul>
-    <li>
-      first, setup the Databricks CLI on your laptop or using this cluster terminal:
-      <div class="code dbdemos_block">pip install databricks-cli</div>
-    </li>
-    <li> 
-      Configure the CLI. You'll need your workspace URL and a PAT token from your profile page
-      <div class="code dbdemos_block">databricks configure</div>
-    </li>  
-    <li>
-      Create the dbdemos scope:
-      <div class="code dbdemos_block">databricks secrets create-scope dbdemos</div>
-    <li>
-      Save your service principal secret. It will be used by the Model Endpoint to autenticate. <br/>
-      If this is a demo/test, you can use one of your PAT token.
-      <div class="code dbdemos_block">databricks secrets put-secret dbdemos rag_sp_token</div>
-    </li>
-    <li>
-      Optional - if someone else created the scope, make sure they give you read access to the secret:
-      <div class="code dbdemos_block">databricks secrets put-acl dbdemos '{get_email()}' READ</div>
-
-    </li>  
-    </ul>  
-    <br/>
-    Detailed error trying to access the secret:
-      <div class="code dbdemos_block">{e}</div>"""
-
-  try:
-    secret = dbutils.secrets.get(secret_scope, secret_key)
-    secret_principal = "__UNKNOWN__"
-    try:
-      from databricks.sdk import WorkspaceClient
-      w = WorkspaceClient(token=dbutils.secrets.get(secret_scope, secret_key), host=host)
-      secret_principal = w.current_user.me().emails[0].value
-    except Exception as e_sp:
-      error = True
-      display_error(f"Couldn't get the SP identity using the Pat Token saved in your secret", 
-                    get_token_error(f"<strong>This likely means that the Pat Token saved in your secret {secret_scope}/{secret_key} is incorrect or expired. Consider replacing it.</strong>", e_sp))
-      return
-  except Exception as e:
-    error = True
-    display_error(f"We couldn't access the Pat Token saved in the secret {secret_scope}/{secret_key}", 
-                  get_token_error("<strong>This likely means your secret isn't set or not accessible for your user</strong>.", e))
-    return
-  
-  try:
-    from databricks.vector_search.client import VectorSearchClient
-    vsc = VectorSearchClient(workspace_url=host, personal_access_token=secret, disable_notice=True)
-    vs_index = vsc.get_index(endpoint_name=VECTOR_SEARCH_ENDPOINT_NAME, index_name=index_name)
-    if embedding_endpoint_name:
-      from langchain.embeddings import DatabricksEmbeddings
-      embedding_model = DatabricksEmbeddings(endpoint=embedding_endpoint_name)
-      embeddings = embedding_model.embed_query('What is Apache Spark?')
-      results = vs_index.similarity_search(query_vector=embeddings, columns=["content"], num_results=1)
-  except Exception as e:
-    error = True
-    vs_error = f"""
-    Why are we getting this error?<br/>
-    The model is using the Pat Token saved with the secret {secret_scope}/{secret_key} to access your vector search index '{index_name}' (host:{host}).<br/><br/>
-    To do so, the principal owning the Pat Token must have USAGE permission on your schema and READ permission on the index.<br/>
-    The principal is the one who generated the token you saved as secret: `{secret_principal}`. <br/>
-    <i>Note: Production-grade deployement should to use a Service Principal ID instead.</i><br/>
-    <br/>
-    Here is how you can fix it:<br/><br/>
-    <strong>Make sure your Service Principal has USE privileve on the schema</strong>:
-    <div class="code dbdemos_block">
-    spark.sql('GRANT USAGE ON CATALOG `{catalog}` TO `{secret_principal}>`');<br/>
-    spark.sql('GRANT USAGE ON DATABASE `{catalog}`.`{db}` TO `{secret_principal}`');<br/>
-    </div>
-    <br/>
-    <strong>Grant SELECT access to your SP to your index:</strong>
-    <div class="code dbdemos_block">
-    from databricks.sdk import WorkspaceClient<br/>
-    import databricks.sdk.service.catalog as c<br/>
-    WorkspaceClient().grants.update(c.SecurableType.TABLE, "{index_name}",<br/>
-                                            changes=[c.PermissionsChange(add=[c.Privilege["SELECT"]], principal="{secret_principal}")])
-    </div>
-    <br/>
-    <strong>If this is still not working, make sure the value saved in your {secret_scope}/{secret_key} secret is your SP pat token </strong>.<br/>
-    <i>Note: if you're using a shared demo workspace, please do not change the secret value if was set to a valid SP value by your admins.</i>
-
-    <br/>
-    <br/>
-    Detailed error trying to access the endpoint:
-    <div class="code dbdemos_block">{str(e)}</div>
-    </div>
-    """
-    if "403" in str(e):
-      display_error(f"Permission error on Vector Search index {index_name} using the endpoint {vs_endpoint_name} and secret {secret_scope}/{secret_key}", vs_error)
-    else:
-      display_error(f"Unkown error accessing the Vector Search index {index_name} using the endpoint {vs_endpoint_name} and secret {secret_scope}/{secret_key}", vs_error)
-  def get_wid():
-    try:
-      return dbutils.notebook.entry_point.getDbutils().notebook().getContext().tags().apply('orgId')
-    except:
-      return None
-  if get_wid() in ["5206439413157315", "984752964297111", "1444828305810485", "2556758628403379"]:
-    print(f"----------------------------\nYou are in a Shared FE workspace. Please don't override the secret value (it's set to the SP `{secret_principal}`).\n---------------------------")
-
-  if not error:
-    print('Secret and permissions seems to be properly setup, you can continue the demo!')
-
-# COMMAND ----------
-
-# MAGIC %md ADD TO CONFIG
-
-# COMMAND ----------
-
-catalog = "main"
-db = "databricks_petm_chatbot"
-index_name=f"{catalog}.{db}.petm_data_embedded_index"
-host = "https://" + spark.conf.get("spark.databricks.workspaceUrl")
-VECTOR_SEARCH_ENDPOINT_NAME = "petm_genai_chatbot"
-text_column = "text"
-vsc_columns = ["title", "url", "source"]
-
-# # #Let's make sure the secret is properly setup and can access our vector search index. Check the quick-start demo for more guidance
-# test_demo_permissions(host, secret_scope="nrf-petm-chatbot", secret_key="rag_sp_token", vs_endpoint_name=VECTOR_SEARCH_ENDPOINT_NAME, index_name=index_name, embedding_endpoint_name="databricks-bge-large-en")
+vs_config = config["vector_search_config"]
+vs_src_table = vs_config["source_table"] + "_index"
+index_name = f"{catalog}.{db}.{vs_src_table}"
+VECTOR_SEARCH_ENDPOINT_NAME = vs_config["VECTOR_SEARCH_ENDPOINT_NAME"]
+text_column = vs_config["text_column"]
+vsc_columns = vs_config["vsc_columns"]
 
 # COMMAND ----------
 
@@ -517,29 +311,29 @@ import os
 
 # os.environ['DATABRICKS_TOKEN'] = dbutils.secrets.get("dbdemos", "rag_sp_token")
 os.environ['DATABRICKS_TOKEN'] = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
+os.environ['DATABRICKS_HOST'] = "https://" + spark.conf.get("spark.databricks.workspaceUrl")
 
 embedding_model = DatabricksEmbeddings(endpoint="databricks-bge-large-en")
 
-def get_retriever(persist_dir: str = None, columns=vsc_columns):
-    os.environ["DATABRICKS_HOST"] = host
-    #Get the vector search index
-    vsc = VectorSearchClient(workspace_url=host, personal_access_token=os.environ["DATABRICKS_TOKEN"])
-    vs_index = vsc.get_index(
-        endpoint_name=VECTOR_SEARCH_ENDPOINT_NAME,
-        index_name=index_name
-    )
+def get_retriever(persist_dir: str = None):
+
+    # Get the vector search index
+    vsc = VectorSearchClient(workspace_url=os.environ["DATABRICKS_HOST"], 
+                             personal_access_token=os.environ['DATABRICKS_TOKEN'])
+    vs_index = vsc.get_index(endpoint_name=VECTOR_SEARCH_ENDPOINT_NAME, 
+                             index_name=index_name)
 
     # Create the retriever
     vectorstore = DatabricksVectorSearch(
-        vs_index, text_column="text", embedding=embedding_model, columns=columns
+        vs_index, text_column=text_column, embedding=embedding_model, columns=vsc_columns
     )
-    return vectorstore.as_retriever(search_kwargs={'k': 3})
+    return vectorstore.as_retriever(search_kwargs={"k": 3})
 
 retriever = get_retriever()
 
 retrieve_document_chain = (
     itemgetter("messages") 
-    | RunnableLambda(extract_question)
+    | RunnableLambda(chat_preprocess.extract_question)
     | retriever
 )
 print(retrieve_document_chain.invoke({"messages": [{"role": "user", "content": "Does PetSmart sell dog food for sensitive stomach?"}]}))
@@ -557,14 +351,6 @@ print(retrieve_document_chain.invoke({"messages": [{"role": "user", "content": "
 
 from langchain.schema.runnable import RunnableBranch
 
-generate_query_to_retrieve_context_template = """
-Based on the chat history below, we want you to generate a query for an external data source to retrieve relevant documents so that we can better answer the question. The query should be in natual language. The external data source uses similarity search to search for relevant documents in a vector space. So the query should be similar to the relevant documents semantically. Answer with only the query. Do not add explanation.
-
-Chat history: {chat_history}
-
-Question: {question}
-"""
-
 generate_query_to_retrieve_context_prompt = PromptTemplate(
   input_variables= ["chat_history", "question"],
   template = generate_query_to_retrieve_context_template
@@ -572,8 +358,8 @@ generate_query_to_retrieve_context_prompt = PromptTemplate(
 
 generate_query_to_retrieve_context_chain = (
     {
-        "question": itemgetter("messages") | RunnableLambda(extract_question),
-        "chat_history": itemgetter("messages") | RunnableLambda(extract_history),
+        "question": itemgetter("messages") | RunnableLambda(chat_preprocess.extract_question),
+        "chat_history": itemgetter("messages") | RunnableLambda(chat_preprocess.extract_history),
     }
     | RunnableBranch(  #Augment query only when there is a chat history
       (lambda x: x["chat_history"], generate_query_to_retrieve_context_prompt | chat_model | StrOutputParser()),
@@ -589,51 +375,19 @@ output = generate_query_to_retrieve_context_chain.invoke({
     ]
 })
 print(f"Test retriever query without history: {output}")
-
-# output = generate_query_to_retrieve_context_chain.invoke({
-#     "messages": [
-#         {"role": "user", "content": "What is PetSmart?"}, 
-#         {"role": "assistant", "content": "PetSmart is a Pet Specialty retailer."},  
-#         {"role": "user", "content": "Does PetSmart sell dog food for small breed dogs like chihuahuas?"},
-#         {"role": "assistant", "content": '  Yes, PetSmart does sell dog food for small breed dogs like Chihuahuas. Royal Canin Breed Health Nutrition Chihuahua Puppy Dry Dog Food is one example of dog food available at PetSmart that is specifically formulated for small breed dogs like Chihuahuas. Additionally, Canidae Pure Petite Small Breed All Life Stage Wet Dog Food is another option available at PetSmart that is designed for small breed dogs, including Chihuahuas.'},
-#         {"role": "user", "content": "I prefer Royal Canin brand, please recommend more of those items."},
-#         {"role": "assistant", "content": """ Sure, here are some Royal Canin dog food products that may be suitable for your Chihuahua, based on their life stage and flavor preferences: 1. Royal Canin Chihuahua Puppy Dry Dog Food - This is a breed-specific puppy food designed for Chihuahuas 8 weeks to 8 months old. It has a unique kibble shape that makes it easy for puppies to pick up and chew, and it contains antioxidants and vitamin E to support their developing immune system.2. Royal Canin Chihuahua Adult Dry Dog Food - This is a breed-specific adult dog food designed for Chihuahuas 8 months and older. It contains highly digestible proteins and precise fiber content to support healthy digestion and reduce stool odor, and it has omega-3 EPA and DHA and biotin to support skin and coat health.3. Royal Canin Chihuahua Adult 8+ Dry Dog Food - This is a breed-specific adult dog food designed for Chihuahuas over 8 years old. It contains the same nutrients as the adult formula but with a more senior-friendly kibble size and texture.4. Royal Canin Chihuahua Wet Dog Food - This is a breed-specific wet dog food designed for Chihuahuas of all life stages. It has a unique texture that makes it easy for Chihuahuas to pick up and eat, and it contains a balanced mix of nutrients and flavors to support their health and well-being.I hope this helps you find the right Royal Canin dog food product for your Chihuahua!"""}
-#         ]
-# })
 output = generate_query_to_retrieve_context_chain.invoke(chat_hist)
 print(f"Test retriever question, summarized with history: {output}")
 
 # COMMAND ----------
 
 from langchain.schema.runnable import RunnableBranch, RunnableParallel, RunnablePassthrough
-
-question_with_history_and_context_str = """
-You are a trustful assistant for PetSmart customers. You are answering dog food preferences based on life stages, flavors, food type (dry vs. wet), brands, formulations, and more related to PetSmart's product catalog. If you do not know the answer to a question, you truthfully say you do not know. Read the discussion to get the context of the previous conversation. In the chat discussion, you are referred to as "system". The user is referred to as "user".
-
-Discussion: {chat_history}
-
-Here's some context which might or might not help you answer: {context}
-
-Answer straight, do not repeat the question, do not start with something like: the answer to the question, do not add "AI" in front of your answer, do not say: here is the answer, do not mention the context or the question.
-
-Based on this history and context, answer this question: {question}
-"""
+# from src.utils.llm_chain_utils import ChatPreprocess
+# from utils import ChatPreprocess
 
 question_with_history_and_context_prompt = PromptTemplate(
   input_variables= ["chat_history", "context", "question"],
   template = question_with_history_and_context_str
 )
-
-def format_context(docs):
-    return "\n\n".join([d.page_content for d in docs])
-  
-  # "item_title", "web_item_page_url"
-
-def extract_source_urls(docs):
-    return list(set([d.metadata["url"] for d in docs]))
-  
-def extract_source_titles(docs):
-  return list(set([d.metadata["title"] for d in docs]))
 
 relevant_question_chain = (
   RunnablePassthrough() |
@@ -644,9 +398,9 @@ relevant_question_chain = (
   }
   |
   {
-    "context": itemgetter("relevant_docs") | RunnableLambda(format_context),
-    "sources": itemgetter("relevant_docs") | RunnableLambda(extract_source_urls),
-    "titles": itemgetter("relevant_docs") | RunnableLambda(extract_source_titles),
+    "context": itemgetter("relevant_docs") | RunnableLambda(chat_preprocess.format_context),
+    "sources": itemgetter("relevant_docs") | RunnableLambda(chat_preprocess.extract_source_urls),
+    "titles": itemgetter("relevant_docs") | RunnableLambda(chat_preprocess.extract_source_titles),
     "chat_history": itemgetter("chat_history"), 
     "question": itemgetter("question")
   }
@@ -675,8 +429,8 @@ branch_node = RunnableBranch(
 full_chain = (
   {
     "question_is_relevant": is_about_petsmart_chain,
-    "question": itemgetter("messages") | RunnableLambda(extract_question),
-    "chat_history": itemgetter("messages") | RunnableLambda(extract_history),    
+    "question": itemgetter("messages") | RunnableLambda(chat_preprocess.extract_question),
+    "chat_history": itemgetter("messages") | RunnableLambda(chat_preprocess.extract_history),    
   }
   | branch_node
 )
@@ -702,7 +456,6 @@ non_relevant_dialog = {
 print(f'Testing with a non relevant question...')
 response = full_chain.invoke(non_relevant_dialog)
 response
-# display_chat(non_relevant_dialog["messages"], response)
 
 # COMMAND ----------
 
@@ -712,27 +465,12 @@ response
 
 # COMMAND ----------
 
-dialog = {
-    "messages": [
-        {"role": "user", "content": "What is PetSmart?"}, 
-        {"role": "assistant", "content": "PetSmart is a Pet Specialty retailer."},  
-        {"role": "user", "content": "Does PetSmart sell dog food for small breed dogs like chihuahuas?"},
-        {"role": "assistant", "content": '  Yes, PetSmart does sell dog food for small breed dogs like Chihuahuas. Royal Canin Breed Health Nutrition Chihuahua Puppy Dry Dog Food is one example of dog food available at PetSmart that is specifically formulated for small breed dogs like Chihuahuas. Additionally, Canidae Pure Petite Small Breed All Life Stage Wet Dog Food is another option available at PetSmart that is designed for small breed dogs, including Chihuahuas.'},
-        {"role": "user", "content": "I prefer Royal Canin brand, please recommend more of those items."},
-    ]
-}
-print(f'Testing with relevant history and question...')
-response = full_chain.invoke(dialog)
-response
-
-# COMMAND ----------
-
 # MAGIC %md ### Langchain documented steps/examples
 
 # COMMAND ----------
 
 chain_steps = full_chain.steps
-chain_steps[0].invoke(dialog)
+chain_steps[0].invoke(chat_hist)
 
 # COMMAND ----------
 
@@ -740,46 +478,181 @@ chain_steps[1]
 
 # COMMAND ----------
 
-# MAGIC %md ### Log to MLflow and UC
+# MAGIC %md ### Log to MLflow and UC:
+# MAGIC - Log model as Pyfunc using custom class; this is needed to wrap src/utils.py code into model for model serving
+
+# COMMAND ----------
+
+import mlflow
+
+class PyfuncModel(mlflow.pyfunc.PythonModel):
+
+    def __init__(self, full_chain, retriever, tokenizer, databricks_host, databricks_token):
+        self.full_chain = full_chain
+        self.retriever = retriever
+        self.databricks_host = databricks_host
+        self.databricks_token = databricks_token
+        self.tokenizer = tokenizer
+
+    def load_context(self, context):
+
+        os.environ["DATABRICKS_HOST"] = self.databricks_host
+        os.environ["DATABRICKS_TOKEN"] = self.databricks_token
+        self.chat_process = ChatPreprocess(tokenizer=self.tokenizer)
+
+
+
+    def get_input(self, model_input):
+        import pandas as pd
+        import numpy as np
+
+        if isinstance(model_input, pd.DataFrame):
+            input_list = model_input.iloc[:, 0].tolist()
+        elif isinstance(model_input, np.ndarray):
+            input_list = model_input[:, 0].tolist()
+        else:
+            input_list = [model_input]
+        # elif isinstance(model_input, str):
+        #     input_list = [model_input]
+        # else: input_list = model_input
+
+        return input_list[0]
+
+    def predict(self, context, model_input):
+        # pass
+
+        input_field = self.get_input(model_input)
+
+        return self.full_chain.invoke(input_field)
+
+
+# COMMAND ----------
+
+chat_hist = {
+    "messages": 
+        [
+            {"role": "user", "content": "What are the best food options for a puppy German Shepherd with sensitive skin?"},
+            {"role": "assistant", "content": "  Based on the information provided, the best food options for a puppy German Shepherd with sensitive skin are Royal Canin Breed Health Nutrition German Shepherd Puppy Dry Dog Food and Hill's Prescription Diet Derm Complete Puppy Environmental/Food Sensitivities Dry Dog Food. Both foods are specifically formulated to support the skin's barriers against environmental irritants and provide nutritional support for building skin health. Additionally, they both contain ingredients that are easy to digest and are designed to promote healthy digestion. It's important to consult with a veterinarian to determine the best food option for your puppy's specific needs."},
+            {"role": "user", "content": "How can I transition my adult dog from a puppy food to an adult food?"}
+            ]
+}
+
+# COMMAND ----------
+
+import pandas as pd
+model_input = pd.DataFrame({"messages": [chat_hist]})
+
+if isinstance(model_input, pd.DataFrame):
+    input_list = model_input.iloc[:, 0][0]
+
+input_list
+full_chain.invoke(input_list)
+
+# COMMAND ----------
+
+python_model = PyfuncModel(full_chain=full_chain, retriever=retriever, databricks_host=os.environ["DATABRICKS_HOST"], databricks_token=os.environ["DATABRICKS_TOKEN"])
+
+# COMMAND ----------
+
+python_model.predict(context="", model_input=chat_hist)
 
 # COMMAND ----------
 
 import cloudpickle
 import pandas as pd
 import mlflow
+from mlflow.pyfunc import PythonModel
 from mlflow.models import infer_signature
 import langchain
 
 mlflow.set_registry_uri("databricks-uc")
-model_name = f"{catalog}.{db}.petm_chatbot_model"
+# model_name = f"{catalog}.{db}.{uc_model_name}"
+model_name = f"{catalog}.{db}.{uc_model_name}_pyfunc"
 
-with mlflow.start_run(run_name="petm_chatbot_rag") as run:
+with mlflow.start_run(run_name="petm_chatbot_rag_pyfunc") as run:
+
+    python_model = PyfuncModel(
+        full_chain=full_chain, 
+        retriever=retriever, 
+        databricks_host=os.environ["DATABRICKS_HOST"], 
+        databricks_token=os.environ["DATABRICKS_TOKEN"]
+        )
+
     #Get our model signature from input/output
-    input_df = pd.DataFrame({"messages": [dialog]})
-    output = full_chain.invoke(dialog)
+    input_df = pd.DataFrame({"messages": [chat_hist]})
+    output = python_model.predict("", input_df)
     signature = infer_signature(input_df, output)
+    # signature = infer_signature(input_df, output)
 
-    model_info = mlflow.langchain.log_model(
-        full_chain,
-        loader_fn=get_retriever,  # Load the retriever with DATABRICKS_TOKEN env as secret (for authentication).
-        artifact_path="chain",
+    mlflow.log_dict(config, artifact_file=f"{target}_config.json")
+    model_info = mlflow.pyfunc.log_model("chain", 
         registered_model_name=model_name,
-        pip_requirements=[
+        python_model=python_model, 
+        code_path = ["../utils/llm_chain_utils.py"],
+        signature=signature, 
+        input_example=input_df, 
+        extra_pip_requirements=[
             "mlflow==" + mlflow.__version__,
             "langchain==" + langchain.__version__,
-            "databricks-vectorsearch",
+            "databricks-vectorsearch==0.22",
             "pydantic==2.5.2 --no-binary pydantic",
             "cloudpickle=="+ cloudpickle.__version__,
             "transformers=="+ transformers.__version__
-        ],
-        input_example=input_df,
-        signature=signature
-    )
+        ])
 
 # COMMAND ----------
 
-model = mlflow.langchain.load_model(model_info.model_uri)
-model.invoke(chat_hist)
+model = mlflow.pyfunc.load_model(model_info.model_uri)
+
+# COMMAND ----------
+
+model.predict(input_df)
+
+# COMMAND ----------
+
+model.predict({"messages": [chat_hist]})
+
+# COMMAND ----------
+
+# import cloudpickle
+# import pandas as pd
+# import mlflow
+# from mlflow.models import infer_signature
+# import langchain
+
+# mlflow.set_registry_uri("databricks-uc")
+# model_name = f"{catalog}.{db}.{uc_model_name}"
+
+# with mlflow.start_run(run_name="petm_chatbot_rag_pyfunc") as run:
+#     #Get our model signature from input/output
+#     input_df = pd.DataFrame({"messages": [chat_hist]})
+#     output = full_chain.invoke(chat_hist)
+#     signature = infer_signature(input_df, output)
+
+#     mlflow.log_dict(config, artifact_file=f"{target}_config.json")
+#     model_info = mlflow.langchain.log_model(
+#         full_chain,
+#         loader_fn=get_retriever,  # Load the retriever with DATABRICKS_TOKEN env as secret (for authentication).
+#         artifact_path="chain",
+#         registered_model_name=model_name,
+#         pip_requirements=[
+#             "mlflow==" + mlflow.__version__,
+#             "langchain==" + langchain.__version__,
+#             "databricks-vectorsearch",
+#             "pydantic==2.5.2 --no-binary pydantic",
+#             "cloudpickle=="+ cloudpickle.__version__,
+#             "transformers=="+ transformers.__version__
+#         ],
+#         input_example=input_df,
+#         signature=signature,
+#         code_paths=["utils.py"]
+#     )
+#         # code_path=["./utils.py"]
+
+# COMMAND ----------
+
+# model = mlflow.langchain.load_model(model_info.model_uri)
+# model.invoke(chat_hist)
 
 # COMMAND ----------
 
@@ -795,18 +668,5 @@ dialog = {
 
 # COMMAND ----------
 
-display_chat(dialog["messages"], model.invoke(dialog))
-
-# COMMAND ----------
-
-dialog = {
-    "messages": [
-        {"role": "user", "content": "What are some best practices for potty training my puppy?"}, 
-        {"role": "assistant", "content": "Pick a feeding schedule and adhere to it. Take your dog outside to the bathroom at the same spot each time.Reward your dog with treats and praise when they go to the bathroom outside. Keep an eye out for problems. Get the right supplies, such as a crate, training pads, and pet-specific cleaning supplies. Be consistent in everything. Stick to a schedule."},
-        {"role": "user", "content": "Does PetSmart sell puppy pads?"}
-    ]
-}
-
-# COMMAND ----------
-
-display_chat(dialog["messages"], model.invoke(dialog))
+# display_chat(dialog["messages"], model.invoke(dialog))
+display_chat(dialog["messages"], model.predict({"messages": [dialog]}))
