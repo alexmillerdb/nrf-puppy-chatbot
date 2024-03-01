@@ -4,6 +4,17 @@
 
 # COMMAND ----------
 
+import numpy as np
+
+np.__version__
+
+# COMMAND ----------
+
+import platform
+print(platform.python_version())
+
+# COMMAND ----------
+
 dbutils.widgets.dropdown("target", "dev", ["dev", "staging", "prod"])
 target = dbutils.widgets.get("target")
 

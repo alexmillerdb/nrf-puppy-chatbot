@@ -565,7 +565,7 @@ async def main(url, questions, max_concurrent_tasks):
     semaphore = asyncio.Semaphore(max_concurrent_tasks)  # Control concurrency
     async with aiohttp.ClientSession() as session:
         tasks = []
-        for _ in range(100):  # Adjust the range as needed
+        for _ in range(1000):  # Adjust the range as needed
             question = np.random.choice(questions)
             task = asyncio.create_task(llama(session, url, question, semaphore))
             tasks.append(task)

@@ -29,6 +29,50 @@ spark.sql(f"USE SCHEMA {schema}")
 
 # COMMAND ----------
 
+def clean_text(text: pd.Series) -> pd.Series:
+    """
+    This function removes HTML tags, replaces specific characters, and transforms HTML character references in a string.
+
+    Parameters:
+    text (pd.Series): The input text series to clean.
+
+    Returns:
+    pd.Series: The cleaned text series.
+    """
+
+    def remove_html_replace_chars_transform_html_refs(s):
+        """
+        This inner function removes HTML tags, replaces specific characters, and transforms HTML character references in a string.
+
+        Parameters:
+        s (str): The input string to process.
+
+        Returns:
+        str: The processed string.
+        """
+        if s is None:
+            return s
+        
+        # Remove HTML tags
+        clean_html = re.compile('<.*?>')
+        s = re.sub(clean_html, '', s)
+        
+        # Replace specific characters
+        s = s.replace("®", "")
+        
+        # Transform HTML character references
+        s = html.unescape(s)
+        
+        # Additional logic for cases like 'dog#&39;s' -> 'dog 39s'
+        s = re.sub(r'#&(\d+);', r' \1', s)
+        
+        return s
+
+    return text.apply(remove_html_replace_chars_transform_html_refs)
+
+
+# COMMAND ----------
+
 import pandas as pd
 import re
 import html

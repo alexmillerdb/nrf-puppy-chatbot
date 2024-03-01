@@ -11,37 +11,6 @@
 from mlflow.deployments import get_deploy_client
 deploy_client = get_deploy_client("databricks")
 
-# try:
-#     endpoint_name  = "dbdemos-azure-openai"
-#     deploy_client.create_endpoint(
-#         name=endpoint_name,
-#         config={
-#             "served_entities": [
-#                 {
-#                     "name": endpoint_name,
-#                     "external_model": {
-#                         "name": "gpt-35-turbo",
-#                         "provider": "openai",
-#                         "task": "llm/v1/chat",
-#                         "openai_config": {
-#                             "openai_api_type": "azure",
-#                             "openai_api_key": "{{secrets/dbdemos/azure-openai}}", #Replace with your own azure open ai key
-#                             "openai_deployment_name": "dbdemo-gpt35",
-#                             "openai_api_base": "https://dbdemos-open-ai.openai.azure.com/",
-#                             "openai_api_version": "2023-05-15"
-#                         }
-#                     }
-#                 }
-#             ]
-#         }
-#     )
-# except Exception as e:
-#     if 'RESOURCE_ALREADY_EXISTS' in str(e):
-#         print('Endpoint already exists')
-#     else:
-#         print(f"Couldn't create the external endpoint with Azure OpenAI: {e}. Will fallback to llama2-70-B as judge. Consider using a stronger model as a judge.")
-#         endpoint_name = "databricks-llama-2-70b-chat"
-
 endpoint_name = "databricks-llama-2-70b-chat"
 
 #Let's query our external model endpoint
@@ -81,11 +50,11 @@ import os
 catalog = "main"
 db = "databricks_petm_chatbot"
 
+mlflow.set_registry_uri("databricks-uc")
 os.environ['DATABRICKS_TOKEN'] = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
 model_name = f"{catalog}.{db}.petm_chatbot_model"
 model_version_to_evaluate = get_latest_model_version(model_name)
 print(f"Model version to evaluate: {model_version_to_evaluate}")
-mlflow.set_registry_uri("databricks-uc")
 rag_model = mlflow.langchain.load_model(f"models:/{model_name}/{model_version_to_evaluate}")
 
 @F.pandas_udf("string")
@@ -112,17 +81,6 @@ df_qa_with_preds = df_qa.withColumn('preds', predict_answer(F.col('inputs'))).ca
 
 print(df_qa_with_preds.count())
 display(df_qa_with_preds)
-
-# COMMAND ----------
-
-# df_qa = (spark.read.table('evaluation_dataset')
-#                   .selectExpr('question as inputs', 'answer as targets')
-#                   .where("targets is not null")
-#                   .sample(fraction=0.005, seed=40)) #small sample for interactive demo
-
-# df_qa_with_preds = df_qa.withColumn('preds', predict_answer(col('inputs'))).cache()
-
-# display(df_qa_with_preds)
 
 # COMMAND ----------
 
@@ -236,10 +194,6 @@ px.bar(df_genai_metrics['answer_correctness/v1/score'].value_counts(), title='An
 df_genai_metrics['toxicity'] = df_genai_metrics['toxicity/v1/score'] * 100
 fig = px.scatter(df_genai_metrics, x='toxicity', y='answer_correctness/v1/score', title='Toxicity vs Correctness', size=[10]*len(df_genai_metrics))
 fig.update_xaxes(tickformat=".2f")
-
-# COMMAND ----------
-
-df_genai_metrics[df_genai_metrics['answer_correctness/v1/score'] == 3]
 
 # COMMAND ----------
 
