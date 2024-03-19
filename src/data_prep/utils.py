@@ -3,14 +3,37 @@ from pyspark import SparkContext
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import StringType, ArrayType, FloatType, IntegerType
+import yaml
+import os
 
-# sc = SparkContext.getOrCreate()
-# spark = SparkSession(sc)
-# spark = SparkSession.builder.getOrCreate()
-# def get_spark_session():
-#     return SparkSession.builder.getOrCreate()
+def load_config(config_path: str):
+    """
+    Load the YAML configuration file and set class attributes.
+    """
+    # config_path = "src.configs.dev_config.yaml"
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
+    
+    with open(config_path, 'r') as yaml_file:
+        config = yaml.safe_load(yaml_file)
+    
+    if not isinstance(config, dict):
+        raise ValueError("Config is not in dict format")
+    
+    return config
 
 def create_cdc_table(table_name, df, spark):
+    """
+    Creates a Change Data Capture (CDC) table in Delta Lake.
+
+    Args:
+        table_name (str): The name of the CDC table to be created.
+        df (DataFrame): The DataFrame containing the schema of the CDC table.
+        spark (SparkSession): The SparkSession object.
+
+    Returns:
+        None
+    """
     from delta import DeltaTable
     (DeltaTable.createIfNotExists(spark)
             .tableName(table_name)

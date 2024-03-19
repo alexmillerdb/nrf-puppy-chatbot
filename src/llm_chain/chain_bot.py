@@ -424,17 +424,6 @@ class ChainFactory:
             | StrOutputParser()
         )
 
-    # def create_chain_with_history(self, prompt_template_str, input_vars):
-    #     prompt_with_history = PromptTemplate(input_variables=input_vars, template=prompt_template_str)
-    #     return (
-    #         # Ensure the input here is prepared to have 'messages' directly accessible
-    #         RunnableLambda(self.chat_preprocess.extract_question),
-    #         RunnableLambda(self.chat_preprocess.extract_history),
-    #         prompt_with_history,
-    #         self.chat_model,
-    #         StrOutputParser()
-    #     )
-
     def create_chain_with_history(self, prompt_template_str, input_vars):
         prompt_with_history = PromptTemplate(input_variables=input_vars, template=prompt_template_str)
         return (
@@ -460,6 +449,7 @@ class RetrievalEmbeddingManager:
             self.vs_index, text_column=text_column, embedding=self.embedding_model, columns=vsc_columns
         )
         return vectorstore.as_retriever(search_kwargs={"k": 3})
+
 
 class PyfuncModel(mlflow.pyfunc.PythonModel):
     def __init__(self, config: AppConfig):
@@ -675,11 +665,6 @@ def create_chain_with_history(self, prompt_template_str, input_vars):
             | self.chat_model
             | StrOutputParser()
         )
-
-# COMMAND ----------
-
-class ChainFactory:
-    def __init__(self, chat_preprocess, chat_model):
 
 # COMMAND ----------
 

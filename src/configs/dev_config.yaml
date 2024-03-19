@@ -2,8 +2,16 @@ environment_config:
   catalog: main
   db: databricks_petm_chatbot
 
+data_config:
+  source_catalog: main
+  source_schema: databricks_petm_chatbot  
+  chunk_size: 1000
+  chunk_overlap: 150
+  tokenizer_name: hf-internal-testing/llama-tokenizer
+  embedding_model_endpoint: databricks-bge-large-en
+
 vector_search_config:
-  VECTOR_SEARCH_ENDPOINT_NAME: petm_genai_chatbot
+  VECTOR_SEARCH_ENDPOINT_NAME: rag_endpoint
   schema: databricks_petm_chatbot
   source_table: petm_data_embedded
   text_column: text
